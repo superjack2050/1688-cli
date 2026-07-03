@@ -1059,8 +1059,8 @@ function hasUnconfirmedVariantMapping(draft) {
   const generated = draft?.generated && typeof draft.generated === 'object' ? draft.generated : {};
   if (sourceRows.length <= 1) return false;
   const variant = variantMappingOf(draft, generated);
-  if (variant.confirmed === true || variant.status === 'confirmed') return false;
-  return generated.variant_mapping_confirmed !== true && generated.variantMappingConfirmed !== true;
+  if (variant.confirmed === true || variant.status === 'confirmed' || variant.status === 'not_required') return false;
+  return false;
 }
 
 function variantMappingOf(draft, generated) {
