@@ -378,8 +378,8 @@ export function useOzonListingQueue({
         draft,
         missingFields: missing,
         message: hasMissing
-          ? `草稿已生成，仍需人工补充：${missing.join('、')}`
-          : '草稿已生成，可检查后提交 Ozon',
+          ? `自动补全未完成：${missing.join('、')}`
+          : '草稿已自动补全，可直接提交 Ozon',
         debug: { attrStats },
         finishedAt: new Date().toISOString(),
       });

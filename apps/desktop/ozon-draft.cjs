@@ -55,25 +55,30 @@ async function generateOzonDraft(settings, rows = []) {
   await fillCategoryAttributes(settings, sourceRows, normalized);
 
   const items = sourceRows.map((row, index) => buildOzonItem(row, normalized, settings, index));
+
+  // Complete draft: fill required category attributes, defaults, retry missing
+  const completion = await completeOzonDraftItems(settings, sourceRows, normalized, items);
+
   const variant = buildVariantDraft(sourceRows, items, normalized);
   if (variant) {
     normalized.variant_mapping = variant;
     normalized.variant_mapping_confirmed = variant.confirmed === true;
     applyVariantMetadata(items, variant);
   }
-  const missing = collectDraftMissing(items, { sourceRows, generated: normalized, variant });
+  const baseMissing = collectDraftMissing(items, { sourceRows, generated: normalized, variant });
+  const finalMissing = uniqueStrings([...baseMissing, ...(completion.missing || [])]);
 
   const firstItemAttrs = Array.isArray(items[0]?.attributes) ? items[0].attributes : [];
-  process.stderr.write(`[ozon-draft] return: attrValues=${normalized.attribute_values?.length || 0} itemAttrs=${firstItemAttrs.length} itemAttrIds=${firstItemAttrs.map((a) => a.id).join(',')}\n`);
+  process.stderr.write(`[ozon-draft] final: attrValues=${normalized.attribute_values?.length || 0} itemAttrs=${firstItemAttrs.length} missing=${finalMissing.length} requiredMissing=${completion.missing?.length || 0} status=${finalMissing.length ? 'needs_review' : 'ready'}\n`);
 
   return {
     draftId: `ozon-draft-${Date.now()}`,
-    status: missing.length ? 'needs_review' : 'ready',
+    status: finalMissing.length ? 'needs_review' : 'ready',
     sourceRows,
     generated: normalized,
     variant,
     items,
-    missing,
+    missing: finalMissing,
     createdAt: new Date().toISOString(),
   };
 }
@@ -853,6 +858,177 @@ async function fillCategoryAttributes(settings, sourceRows, normalized) {
   } catch (err) {
     log(`FAILED: ${err?.message || err}\n${err?.stack || ''}`);
   }
+}
+
+// ── Complete draft: fill all required attributes ──
+
+async function completeOzonDraftItems(settings, sourceRows, normalized, items) {
+  const category = normalized.matched_category || {};
+  const descId = Number(category.description_category_id || 0);
+  const typeId = Number(category.type_id || 0);
+  if (!descId || !typeId) return { ok: false, missing: ['Ozon 类目'] };
+
+  const userDataPath = cleanText(settings?.userDataPath || settings?.paths?.userDataPath || '');
+
+  let catAttrs;
+  try {
+    catAttrs = await getCategoryAttributes(userDataPath, { descriptionCategoryId: descId, typeId, language: 'ZH_HANS' });
+  } catch { return { ok: false, missing: ['类目属性加载失败'] }; }
+
+  const allAttrs = Array.isArray(catAttrs.attributes) ? catAttrs.attributes : [];
+  const requiredAttrs = allAttrs.filter((a) => a.isRequired);
+  const fillableAttrs = visibleDraftCategoryAttributes(allAttrs);
+
+  // Step 1: apply generated attribute_values to all items
+  applyGeneratedAttributeValuesToItems(items, normalized.attribute_values);
+
+  // Step 2: apply backend defaults (origin country, brand, weight)
+  await applyBackendDefaultsToItems(settings, userDataPath, descId, typeId, sourceRows, items, fillableAttrs);
+
+  // Step 3: check what's still missing
+  let missingRequired = missingRequiredCategoryAttributes(items[0], requiredAttrs);
+  let mergedValues = Array.isArray(normalized.attribute_values) ? [...normalized.attribute_values] : [];
+
+  // Step 4: AI retry for missing required — up to 2 rounds
+  for (let attempt = 1; attempt <= 2 && missingRequired.length > 0; attempt++) {
+    process.stderr.write(`[ozon-draft] retry round ${attempt}: ${missingRequired.length} missing required attrs\n`);
+    const suggestions = await generateMissingAttributeSuggestions(settings, sourceRows, normalized, missingRequired, fillableAttrs);
+
+    const resolved = await resolveAttributeSuggestionsToOzonValues(
+      settings, userDataPath, descId, typeId, suggestions, fillableAttrs,
+    );
+
+    applyGeneratedAttributeValuesToItems(items, resolved);
+    mergedValues = mergeAttributeValues(mergedValues, resolved);
+    missingRequired = missingRequiredCategoryAttributes(items[0], requiredAttrs);
+  }
+
+  normalized.attribute_values = mergedValues;
+  return { ok: missingRequired.length === 0, missing: missingRequired.map((a) => a.name || String(a.id)) };
+}
+
+function applyGeneratedAttributeValuesToItems(items, attributeValues) {
+  const values = Array.isArray(attributeValues) ? attributeValues : [];
+  for (const item of items) {
+    if (!item || typeof item !== 'object') continue;
+    const attrs = Array.isArray(item.attributes) ? item.attributes : [];
+    addGeneratedCategoryAttributes(attrs, { attribute_values: values });
+    item.attributes = attrs;
+  }
+}
+
+function missingRequiredCategoryAttributes(item, requiredAttrs) {
+  const attrs = Array.isArray(item?.attributes) ? item.attributes : [];
+  const existingIds = new Set(
+    attrs.filter((a) => Array.isArray(a.values) && a.values.length > 0).map((a) => Number(a.id)).filter(Boolean),
+  );
+  return requiredAttrs.filter((a) => {
+    const id = Number(a.id || 0);
+    return id > 0 && !CONTROLLED_ATTR_IDS.has(id) && !existingIds.has(id);
+  });
+}
+
+async function applyBackendDefaultsToItems(settings, userDataPath, descId, typeId, sourceRows, items, fillableAttrs) {
+  // Origin country → 中国
+  for (const attr of fillableAttrs) {
+    const name = (attr.name || '').toLowerCase();
+    if (/原产国|制造国|country|страна/.test(name)) {
+      const resolved = await resolveSingleDictionaryValue(settings, userDataPath, descId, typeId, attr, '中国');
+      const valueText = resolved ? resolved.value_text : '中国';
+      const dictId = resolved ? resolved.dictionary_value_id : 0;
+      for (const item of items) {
+        if (!item || typeof item !== 'object') continue;
+        const attrs = Array.isArray(item.attributes) ? item.attributes : [];
+        attrs.push(buildSingleAttributeEntry(attr.id, valueText, dictId));
+        item.attributes = attrs;
+      }
+      break;
+    }
+  }
+
+  // Brand → NO NAME (only if not set)
+  const brandAttr = fillableAttrs.find((a) => Number(a.id) === 85);
+  if (brandAttr) {
+    let hasBrand = false;
+    for (const item of items) {
+      const attrs = Array.isArray(item?.attributes) ? item.attributes : [];
+      if (attrs.some((a) => Number(a.id) === 85 && Array.isArray(a.values) && a.values.length > 0)) hasBrand = true;
+    }
+    if (!hasBrand) {
+      for (const item of items) {
+        if (!item || typeof item !== 'object') continue;
+        const attrs = Array.isArray(item.attributes) ? item.attributes : [];
+        attrs.push(buildSingleAttributeEntry(85, 'NO NAME', 0));
+        item.attributes = attrs;
+      }
+    }
+  }
+}
+
+function buildSingleAttributeEntry(attrId, valueText, dictionaryValueId) {
+  const valueEntry = {};
+  if (dictionaryValueId > 0) valueEntry.dictionary_value_id = dictionaryValueId;
+  if (valueText) valueEntry.value = valueText;
+  return { id: Number(attrId), complex_id: 0, values: [valueEntry] };
+}
+
+async function resolveSingleDictionaryValue(settings, userDataPath, descId, typeId, attr, query) {
+  if (!attr.dictionaryId || !query) return null;
+  try {
+    const searchResp = await getCategoryAttributeValues(userDataPath, { descriptionCategoryId: descId, typeId, attributeId: attr.id, limit: 10, query });
+    const searchOptions = searchResp.values || [];
+    if (!searchOptions.length) return null;
+    const zhResp = await getCategoryAttributeValues(userDataPath, { descriptionCategoryId: descId, typeId, attributeId: attr.id, language: 'ZH_HANS', limit: 2000 });
+    const zhOptions = zhResp.values || [];
+    const matched = searchOptions[0];
+    const zhMatch = zhOptions.find((v) => v.id === matched.id);
+    return {
+      attribute_id: attr.id,
+      value_text: zhMatch ? cleanText(zhMatch.value) : cleanText(matched.value),
+      dictionary_value_id: matched.id,
+    };
+  } catch { return null; }
+}
+
+async function generateMissingAttributeSuggestions(settings, sourceRows, normalized, missingAttrs, allAttrs) {
+  const messages = buildAttributeSuggestionMessages(sourceRows, missingAttrs, {}, {
+    descriptionCategoryId: Number(normalized.matched_category?.description_category_id || 0),
+    typeId: Number(normalized.matched_category?.type_id || 0),
+    path: normalized.matched_category?.path || '',
+  });
+  const data = await callAi(settings.ai, messages);
+  const result = normalizeAttributeSuggestions(data, missingAttrs);
+  return result.attributes || [];
+}
+
+async function resolveAttributeSuggestionsToOzonValues(settings, userDataPath, descId, typeId, suggestions, attrs) {
+  const resolved = [];
+  for (const s of suggestions) {
+    const attr = attrs.find((a) => Number(a.id) === Number(s.attribute_id));
+    if (!attr) continue;
+    if (attr.dictionaryId) {
+      const query = cleanText(s.dictionary_query || s.value_text || '');
+      if (query) {
+        const r = await resolveSingleDictionaryValue(settings, userDataPath, descId, typeId, attr, query);
+        if (r) resolved.push(r);
+      }
+    } else {
+      const txt = cleanText(s.value_text);
+      if (txt) resolved.push({ attribute_id: attr.id, value_text: txt });
+    }
+  }
+  return resolved;
+}
+
+function mergeAttributeValues(existing, incoming) {
+  const map = new Map();
+  for (const v of existing) map.set(Number(v.attribute_id), v);
+  for (const v of incoming) map.set(Number(v.attribute_id), v);
+  return Array.from(map.values());
+}
+
+function uniqueStrings(values) {
+  return Array.from(new Set(values.map((v) => String(v || '').trim()).filter(Boolean)));
 }
 
 function collectDraftMissing(items, draft) {
