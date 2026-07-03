@@ -191,7 +191,7 @@ async function validateRequiredCategoryAttributes(settings, items) {
     const data = await callOzonSellerApi(ozon, '/v1/description-category/attribute', {
       description_category_id: descId,
       type_id: typeId,
-      language: 'DEFAULT',
+      language: 'ZH_HANS',
     });
     const requiredAttrs = extractRequiredAttributes(data);
     if (!requiredAttrs.length) continue;
