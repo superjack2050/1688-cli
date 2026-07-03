@@ -1341,6 +1341,8 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onTo
     setActiveStep(0);
     setAttemptedProduct(false);
     setAttemptedFeatures(false);
+    setAttributeAiFilledKey('');
+    setAttributeAiFilling(false);
   }, [task.key, task.draftId]);
 
   useEffect(() => {

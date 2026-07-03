@@ -610,6 +610,46 @@ function normalizeGenerated(data, candidates) {
   };
 }
 
+const CONTROLLED_ATTR_IDS = new Set([85, 9048, 4191, 23171, 4497, 11254]);
+
+function isMediaLikeAttribute(attr) {
+  const name = `${attr.name || ''} ${attr.description || ''} ${attr.groupName || ''}`.toLowerCase();
+  return /video|rich|pdf|json|image|picture|видео|медиа|изображ|фото|富内容|视频|图片|封面|pdf/i.test(name);
+}
+
+function visibleDraftCategoryAttributes(attrs) {
+  return attrs
+    .filter((attr) => Number(attr.id) > 0)
+    .filter((attr) => !CONTROLLED_ATTR_IDS.has(Number(attr.id)))
+    .filter((attr) => !isMediaLikeAttribute(attr))
+    .slice(0, 80);
+}
+
+function addGeneratedCategoryAttributes(attrs, generated) {
+  const values = Array.isArray(generated?.attribute_values) ? generated.attribute_values : [];
+  const seen = new Set(attrs.map((attr) => Number(attr.id)).filter(Boolean));
+
+  for (const item of values) {
+    const attrId = Number(item.attribute_id || item.id || 0);
+    if (!attrId || seen.has(attrId)) continue;
+
+    const valueText = cleanText(item.value_text || item.value || '');
+    const dictionaryValueId = Number(item.dictionary_value_id || item.dictionaryValueId || 0);
+    if (!valueText && !dictionaryValueId) continue;
+
+    const valueEntry = {};
+    if (dictionaryValueId > 0) valueEntry.dictionary_value_id = dictionaryValueId;
+    if (valueText) valueEntry.value = valueText;
+
+    attrs.push({
+      id: attrId,
+      complex_id: 0,
+      values: [valueEntry],
+    });
+    seen.add(attrId);
+  }
+}
+
 function buildOzonItem(row, generated, settings, index) {
   const images = imageUrls(row);
   const category = generated.matched_category || {};
@@ -622,6 +662,8 @@ function buildOzonItem(row, generated, settings, index) {
   addAttribute(attrs, ATTR_MODEL_NAME, generated.model_name || generated.title_ru);
   addAttribute(attrs, ATTR_DESCRIPTION, generated.description_ru);
   addAttribute(attrs, ATTR_TAGS, generated.tags.join('\n'));
+  // Merge backend-generated category attributes into item.attributes
+  addGeneratedCategoryAttributes(attrs, generated);
   return {
     name: generated.title_ru || String(row.product_title || row.sku_name || '').slice(0, 500),
     offer_id: stableOfferId(row, index),
@@ -745,7 +787,7 @@ async function fillCategoryAttributes(settings, sourceRows, normalized) {
       typeId,
       language: 'ZH_HANS',
     });
-    const attrs = (catAttrs.attributes || []).filter((a) => !a.isAspect);
+    const attrs = visibleDraftCategoryAttributes(catAttrs.attributes || []);
     log(`step 1 done: ${attrs.length} attrs (non-aspect)`);
     if (!attrs.length) { log('SKIP: no attributes'); return; }
 
