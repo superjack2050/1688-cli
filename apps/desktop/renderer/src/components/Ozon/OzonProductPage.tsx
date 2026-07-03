@@ -1,5 +1,7 @@
 import React, { useMemo, useState } from 'react';
 import type { OzonListingTask, OzonListingTaskPatch } from '../Results/ozonListing/types';
+import { getApi } from '../../services/api';
+import type { OzonDraft } from '../../services/api';
 import OzonProductCard, {
   isOzonTaskImportedStatus,
   isOzonTaskFailedStatus,
@@ -247,6 +249,39 @@ export default function OzonProductPage({ tasks, onBackTo1688, onTaskUpdate }: P
     setSelectedTask(null);
   }
 
+  async function submitTask(task: OzonListingTask): Promise<void> {
+    if (!task.draft) { showToast('草稿不存在，无法提交。'); return; }
+    if (!confirm('确认提交该草稿到 Ozon？提交后将创建真实商品。')) return;
+
+    showToast('正在提交 Ozon...');
+    try {
+      const result = await getApi().ozon.submitDraft(
+        task.draft as OzonDraft,
+        true,
+      );
+      if ((result as Record<string, unknown>).ok) {
+        handleTaskUpdate(task.key, {
+          status: 'import_pending',
+          message: 'Ozon 已接收导入任务，等待结果...',
+          finishedAt: new Date().toISOString(),
+        });
+        showToast('已提交到 Ozon，等待导入结果。');
+      } else {
+        handleTaskUpdate(task.key, {
+          status: 'submit_failed',
+          message: `提交失败：${(result as Record<string, unknown>).message || '未知错误'}`,
+        });
+        showToast('提交失败，请查看详情。');
+      }
+    } catch (error) {
+      handleTaskUpdate(task.key, {
+        status: 'submit_failed',
+        message: `提交异常：${error instanceof Error ? error.message : String(error)}`,
+      });
+      showToast(error instanceof Error ? error.message : String(error));
+    }
+  }
+
   return (
     <div className="ozon-product-page">
       <section className="ozon-products-hero">
@@ -331,6 +366,7 @@ export default function OzonProductPage({ tasks, onBackTo1688, onTaskUpdate }: P
                 task={task}
                 onInspect={inspectTask}
                 onCopyDraft={copyDraft}
+                onSubmitDraft={submitTask}
                 onBackTo1688={onBackTo1688}
               />
             ))}

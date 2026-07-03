@@ -8,6 +8,7 @@ type Props = {
   task: OzonListingTask;
   onInspect: (task: OzonListingTask) => void;
   onCopyDraft?: (task: OzonListingTask) => void;
+  onSubmitDraft?: (task: OzonListingTask) => void;
   onBackTo1688?: () => void;
 };
 
@@ -98,8 +99,9 @@ function updateTimeOf(task: OzonListingTask): string {
   });
 }
 
-export default function OzonProductCard({ task, onInspect, onCopyDraft }: Props) {
+export default function OzonProductCard({ task, onInspect, onCopyDraft, onSubmitDraft }: Props) {
   const [imageFailed, setImageFailed] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
   const statusGroup = statusGroupOf(task.status);
   const message = formatOzonTaskDisplayMessage(task);
   const sourceUrl = task.sourceUrl || text(firstRow(task).detail_url);
@@ -177,6 +179,13 @@ export default function OzonProductCard({ task, onInspect, onCopyDraft }: Props)
         {task.draft && onCopyDraft && (
           <button type="button" onClick={() => onCopyDraft(task)}>
             复制 Payload
+          </button>
+        )}
+        {task.status === 'draft_ready' && onSubmitDraft && (
+          <button type="button" disabled={submitting}
+            onClick={() => { setSubmitting(true); onSubmitDraft(task); }}
+            style={{ background: '#2563eb', color: '#fff', borderColor: '#2563eb' }}>
+            {submitting ? '提交中...' : '提交 Ozon'}
           </button>
         )}
       </div>
