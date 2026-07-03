@@ -963,13 +963,16 @@ async function applyBackendDefaultsToItems(settings, userDataPath, descId, typeI
     if (!hasBrand) {
       // Try to resolve NO NAME dictionary_value_id first
       const resolved = await resolveSingleDictionaryValue(settings, userDataPath, descId, typeId, brandAttr, 'NO NAME');
-      const brandDictId = resolved ? resolved.dictionary_value_id : 0;
-      for (const item of items) {
-        if (!item || typeof item !== 'object') continue;
-        const attrs = Array.isArray(item.attributes) ? item.attributes : [];
-        attrs.push(buildSingleAttributeEntry(85, 'NO NAME', brandDictId));
-        item.attributes = attrs;
+      if (resolved && resolved.dictionary_value_id > 0) {
+        for (const item of items) {
+          if (!item || typeof item !== 'object') continue;
+          const attrs = Array.isArray(item.attributes) ? item.attributes : [];
+          attrs.push(buildSingleAttributeEntry(85, resolved.value_text || 'NO NAME', resolved.dictionary_value_id));
+          item.attributes = attrs;
+        }
       }
+      // If NO NAME is not in the Ozon brand dictionary, leave brand empty.
+      // The user must pick a real brand from the Ozon list.
     }
   }
 }
