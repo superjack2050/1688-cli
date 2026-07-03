@@ -276,7 +276,7 @@ function buildAttributes(
     });
 
   const controlled = [
-    buildAttribute(ATTR_BRAND, form.brand),
+    buildAttribute(ATTR_BRAND, form.brand, dictionaryValueIds[String(ATTR_BRAND)]),
     buildAttribute(ATTR_MODEL, form.model),
     buildAttribute(ATTR_WEIGHT, String(positiveInteger(form.weight))),
     buildAttribute(ATTR_DESCRIPTION, form.description),
@@ -701,7 +701,6 @@ function DictionaryAttributeField({
                     onClick={() => selectOption(option)}
                   >
                     <span>{label}</span>
-                    <small>ID {option.id}{option.info ? ` / ${option.info}` : ''}</small>
                   </button>
                 );
               })
@@ -944,6 +943,12 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onTo
   const [showCategoryTree, setShowCategoryTree] = useState(true);
   const [expandedCategoryIds, setExpandedCategoryIds] = useState<Record<string, boolean>>({});
   const [dictionaryValueIds, setDictionaryValueIds] = useState<DictionaryValueIds>(() => attributeDictionaryIdsById(firstItemOf(task)));
+
+  const brandAttribute = useMemo(
+    () => categoryAttributes.find((attr) => attr.id === ATTR_BRAND) || null,
+    [categoryAttributes],
+  );
+  const brandIsDictionary = Boolean(brandAttribute?.dictionaryId);
 
   useEffect(() => {
     const nextForm = createDraftForm(task);
@@ -1365,8 +1370,25 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onTo
 
             <div className="ozon-draft-form-grid two">
               <label className="ozon-draft-field">
-                <span>品牌 *</span>
-                <input value={form.brand} onChange={(event) => updateField('brand', event.target.value)} />
+                <span>
+                  品牌 *
+                  {brandIsDictionary ? '（字典）' : ''}
+                </span>
+                {brandAttribute && brandIsDictionary ? (
+                  <DictionaryAttributeField
+                    attr={brandAttribute}
+                    value={form.brand}
+                    valueIds={dictionaryValueIds[String(ATTR_BRAND)] || {}}
+                    descriptionCategoryId={intForPayload(form.descriptionCategoryId)}
+                    typeId={intForPayload(form.typeId)}
+                    onChange={(nextValue, nextIds) => {
+                      updateField('brand', nextValue);
+                      updateDictionaryValueIds(ATTR_BRAND, nextIds);
+                    }}
+                  />
+                ) : (
+                  <input value={form.brand} onChange={(event) => updateField('brand', event.target.value)} />
+                )}
               </label>
               <label className="ozon-draft-field">
                 <span>型号名称 *</span>
