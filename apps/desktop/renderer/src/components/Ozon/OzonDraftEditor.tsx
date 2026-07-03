@@ -378,19 +378,8 @@ function collectPayloadMissing(
     if (!text(item.primary_image)) missing.add('主图');
     if (!Number(item.description_category_id) || !Number(item.type_id)) missing.add('Ozon 类目');
     if (!Number(item.price)) missing.add('价格');
-    for (const [key, label] of [['depth', '长'], ['width', '宽'], ['height', '高'], ['weight', '重量']] as const) {
-      if (!Number(item[key])) missing.add(label);
-    }
   }
-  if (hasUnconfirmedVariantMapping(draft)) missing.add('规格属性映射');
   return Array.from(missing);
-}
-
-function hasUnconfirmedVariantMapping(draft: OzonDraft): boolean {
-  const generated = objectOf(draft.generated);
-  const sourceRows = Array.isArray(draft.sourceRows) ? draft.sourceRows : [];
-  if (sourceRows.length <= 1) return false;
-  return generated.variant_mapping_confirmed !== true && generated.variantMappingConfirmed !== true;
 }
 
 function statusFromSubmitResponse(response: Record<string, unknown>): OzonListingTask['status'] {
@@ -1542,8 +1531,7 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onTo
       title: text(result.firstItem.name) || task.title,
       price: text(result.firstItem.price) || task.price,
       image: text(result.firstItem.primary_image) || task.image,
-      status: result.missing.length ? 'needs_manual' : 'draft_ready',
-      missingFields: result.missing,
+      status: 'draft_ready',
       message: result.missing.length
         ? `需补充：${formatMissingFields(result.missing)}`
         : 'Ozon 草稿已保存，可进入预览提交。',

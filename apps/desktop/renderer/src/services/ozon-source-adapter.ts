@@ -89,14 +89,8 @@ function baseRow(input: {
     weight_g: normalizeWeight(input.pack.weight ?? objectOf(input.raw.freight).unitWeight),
     raw_1688: input.raw,
   };
-  row.missing_fields = missingFields(row);
-  row.status = (row.missing_fields as string[]).length ? 'partial' : 'ok';
+  row.status = 'ok';
   return row;
-}
-
-function missingFields(row: Row): string[] {
-  return ['detail_url', 'product_title', 'main_image_url', 'sku_price', 'length_cm', 'width_cm', 'height_cm', 'weight_g']
-    .filter((key) => !text(row[key]));
 }
 
 function objectOf(value: unknown): Row {

@@ -44,13 +44,6 @@ export function normalizeOzonTaskError(error: unknown, context: OzonErrorContext
     return '生成 Ozon 草稿失败：未配置可用的 AI 服务，请先到 AI 设置中完成配置。';
   }
 
-  if (context.phase === 'missing_fields' || missingFields.length > 0 || MISSING_RE.test(raw)) {
-    const fields = formatMissingFields(missingFields);
-    return fields
-      ? `无法生成完整草稿：缺少必要字段（${fields}），请人工补充后再继续。`
-      : '无法生成完整草稿：缺少必要字段（长、宽、高、重量、类目属性等），请人工补充后再继续。';
-  }
-
   if (context.phase === 'timeout' || TIMEOUT_RE.test(raw)) {
     return '生成 Ozon 草稿超时，请稍后重试。';
   }

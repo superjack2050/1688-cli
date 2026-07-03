@@ -279,11 +279,9 @@ export function useOzonListingQueue({
     const precheck = precheckProgressCardForOzon(latest);
 
     if (!precheck.offerId) {
-      const missingFields = unique([...precheck.missingFields, 'offer_id']);
       upsertOzonTask(entry.key, {
-        status: 'needs_manual',
-        missingFields,
-        message: normalizeOzonTaskError('', { phase: 'missing_fields', missingFields }),
+        status: 'failed',
+        message: '缺少 Offer ID，无法生成草稿',
         finishedAt: new Date().toISOString(),
       });
       return null;
@@ -381,10 +379,6 @@ export function useOzonListingQueue({
 
     const precheck = precheckProgressCardForOzon(deepItem);
     const rows = progressCardToOzonRows(deepItem);
-    const sourceMissingFields = unique([
-      ...precheck.missingFields,
-      ...collectRowMissingFields(rows),
-    ]);
 
     upsertOzonTask(entry.key, {
       title: deepItem.title,
@@ -393,7 +387,6 @@ export function useOzonListingQueue({
       sourceUrl: sourceUrlOf(deepItem),
       offerId: deepItem.offerId,
       status: 'generating_draft',
-      missingFields: sourceMissingFields,
       message: '正在生成 Ozon 草稿',
     });
 
@@ -401,7 +394,6 @@ export function useOzonListingQueue({
       ozonListingLog('generateDraft start', {
         offerId: deepItem.offerId,
         rowCount: rows.length,
-        sourceMissingFields,
       });
 
       const draft = await api.ozon.generateDraft(rows);
@@ -409,36 +401,25 @@ export function useOzonListingQueue({
       // Start AI attribute fill in background — republishes task on completion
       fillDraftAttributes(entry, draft, rows);
 
-      const missingFields = unique([
-        ...sourceMissingFields,
-        ...(Array.isArray(draft.missing) ? draft.missing.map(String) : []),
-      ]);
-      const status = missingFields.length ? 'needs_manual' : 'draft_ready';
-
       upsertOzonTask(entry.key, {
-        status,
+        status: 'draft_ready',
         draftId: draft.draftId,
         draft,
-        missingFields,
-        message: status === 'draft_ready' ? '草稿已生成' : normalizeOzonTaskError('', { phase: 'missing_fields', missingFields }),
+        message: '草稿已生成',
         finishedAt: new Date().toISOString(),
       });
 
       ozonListingLog('generateDraft done', {
         offerId: deepItem.offerId,
         draftId: draft.draftId,
-        status,
-        missingFields,
       });
     } catch (error) {
       const message = errorMessageOf(error);
 
       if (isAiKeyMissingMessage(message)) {
-        const missingFields = unique([...sourceMissingFields, 'ai_api_key']);
         upsertOzonTask(entry.key, {
-          status: 'needs_manual',
-          missingFields,
-          message: normalizeOzonTaskError(message, { phase: 'generate', missingFields }),
+          status: 'failed',
+          message: normalizeOzonTaskError(message, { phase: 'generate' }),
           debug: { rawError: message },
           finishedAt: new Date().toISOString(),
         });
@@ -554,7 +535,6 @@ export function useOzonListingQueue({
         sourceUrl: sourceUrlOf(item),
         status: 'queued',
         message: '排队等待生成 Ozon 草稿',
-        missingFields: [],
         createdAt: new Date().toISOString(),
       });
 

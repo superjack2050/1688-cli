@@ -1,6 +1,5 @@
 import React, { useEffect, useState } from 'react';
 import type { OzonListingTask, OzonListingTaskStatus } from '../Results/ozonListing/types';
-import { formatMissingFields } from '../Results/ozonListing/precheck';
 import { formatOzonTaskDisplayMessage } from './ozonError';
 
 export type OzonProductStatusGroup = 'draft' | 'success' | 'processing' | 'manual' | 'failed';
@@ -99,18 +98,9 @@ function updateTimeOf(task: OzonListingTask): string {
   });
 }
 
-function missingSummaryOf(task: OzonListingTask): string {
-  const fields = task.missingFields || [];
-  if (fields.length > 0) return formatMissingFields(fields);
-  const draftMissing = task.draft?.missing || [];
-  if (draftMissing.length > 0) return formatMissingFields(draftMissing);
-  return '';
-}
-
 export default function OzonProductCard({ task, onInspect }: Props) {
   const [imageFailed, setImageFailed] = useState(false);
   const statusGroup = statusGroupOf(task.status);
-  const missingSummary = missingSummaryOf(task);
   const message = formatOzonTaskDisplayMessage(task);
   const sourceUrl = task.sourceUrl || text(firstRow(task).detail_url);
   const title = task.title || text(firstRow(task).product_title) || text(firstItem(task).name) || task.offerId || '未命名商品';
@@ -159,12 +149,6 @@ export default function OzonProductCard({ task, onInspect }: Props) {
             </a>
           )}
         </div>
-
-        {missingSummary && (
-          <div className="ozon-product-missing" title={missingSummary}>
-            需人工补充：{missingSummary}
-          </div>
-        )}
 
         {message && (
           <div className={`ozon-product-message ozon-product-message--${statusGroup}`} title={message}>
