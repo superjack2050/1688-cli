@@ -567,6 +567,96 @@ function FieldError({ show, text: value }: { show: boolean; text: string }) {
   return <small className="ozon-draft-error-text">{value}</small>;
 }
 
+function BrandDictionaryField({
+  attr,
+  value,
+  valueIds,
+  descriptionCategoryId,
+  typeId,
+  onChange,
+}: {
+  attr: OzonCategoryAttribute;
+  value: string;
+  valueIds: Record<string, number>;
+  descriptionCategoryId: number;
+  typeId: number;
+  onChange: (value: string, valueIds: Record<string, number>) => void;
+}) {
+  const [query, setQuery] = useState(value || 'NO NAME');
+  const [loading, setLoading] = useState(false);
+  const [message, setMessage] = useState('');
+  const [options, setOptions] = useState<OzonAttributeValue[]>([]);
+
+  async function searchBrand(searchText?: string) {
+    const keyword = text(searchText ?? query);
+    if (!keyword) { setMessage('请输入品牌关键词。'); return; }
+    if (!descriptionCategoryId || !typeId) { setMessage('请先选择 Ozon 类目和类型。'); return; }
+
+    setLoading(true);
+    setMessage('');
+    try {
+      const response = await getApi().ozon.getCategoryAttributeValues({
+        descriptionCategoryId,
+        typeId,
+        attributeId: attr.id,
+        language: 'ZH_HANS',
+        limit: 5,
+        query: keyword,
+      });
+      const values = response.values || [];
+      setOptions(values.slice(0, 5));
+      setMessage(values.length ? '' : '未找到相近品牌。');
+    } catch (error) {
+      setOptions([]);
+      setMessage(error instanceof Error ? error.message : String(error));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function selectOption(option: OzonAttributeValue) {
+    const label = text(option.value);
+    if (!label) return;
+    setQuery(label);
+    onChange(label, { [label]: option.id });
+    setOptions([]);
+    setMessage('');
+  }
+
+  return (
+    <div className="ozon-brand-dictionary-field">
+      <div className="ozon-brand-search-row">
+        <input
+          value={query}
+          onChange={(event) => {
+            setQuery(event.target.value);
+            onChange(event.target.value, valueIds);
+          }}
+          placeholder="输入品牌，例如 NO NAME、Nike"
+        />
+        <button type="button" onClick={() => searchBrand()} disabled={loading}>
+          🔍
+        </button>
+      </div>
+
+      {message && <small>{message}</small>}
+
+      {options.length > 0 && (
+        <div className="ozon-brand-options">
+          {options.map((option) => {
+            const label = text(option.value);
+            return (
+              <button key={option.id} type="button" onClick={() => selectOption(option)}>
+                <span>{label}</span>
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function DictionaryAttributeField({
   attr,
   value,
@@ -982,6 +1072,41 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onTo
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Auto-bind NO NAME dictionary_value_id for brand dictionary fields
+  useEffect(() => {
+    const descId = intForPayload(form.descriptionCategoryId);
+    const typeId = intForPayload(form.typeId);
+    if (!brandAttribute?.dictionaryId || !descId || !typeId) return;
+
+    const currentBrand = text(form.brand) || 'NO NAME';
+    const currentIds = dictionaryValueIds[String(ATTR_BRAND)] || {};
+    if (currentIds[currentBrand]) return;
+    if (currentBrand.toUpperCase() !== 'NO NAME') return;
+
+    let alive = true;
+    getApi().ozon.getCategoryAttributeValues({
+      descriptionCategoryId: descId,
+      typeId,
+      attributeId: ATTR_BRAND,
+      language: 'ZH_HANS',
+      limit: 5,
+      query: 'NO NAME',
+    }).then((response) => {
+      if (!alive) return;
+      const values = response.values || [];
+      const exact = values.find((item) => text(item.value).toUpperCase() === 'NO NAME')
+        || values.find((item) => /no\s*name/i.test(text(item.value)));
+      if (exact?.id) {
+        updateField('brand', text(exact.value) || 'NO NAME');
+        updateDictionaryValueIds(ATTR_BRAND, { [text(exact.value) || 'NO NAME']: exact.id });
+      }
+    }).catch(() => { /* non-blocking */ });
+
+    return () => { alive = false; };
+    // Only fire when category changes; brandAttribute, descId, typeId stabilize
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [brandAttribute?.dictionaryId, form.descriptionCategoryId, form.typeId]);
+
   useEffect(() => {
     const descriptionCategoryId = intForPayload(form.descriptionCategoryId);
     const typeId = intForPayload(form.typeId);
@@ -1375,7 +1500,7 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onTo
                   {brandIsDictionary ? '（字典）' : ''}
                 </span>
                 {brandAttribute && brandIsDictionary ? (
-                  <DictionaryAttributeField
+                  <BrandDictionaryField
                     attr={brandAttribute}
                     value={form.brand}
                     valueIds={dictionaryValueIds[String(ATTR_BRAND)] || {}}

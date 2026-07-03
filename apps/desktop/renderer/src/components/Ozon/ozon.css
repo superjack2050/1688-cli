@@ -2564,3 +2564,67 @@
 .ozon-category-tree-label strong {
   font-size: 13px;
 }
+
+/* ── Brand dictionary search ── */
+.ozon-brand-dictionary-field small {
+  display: block;
+  margin-top: 5px;
+  color: #9ca3af;
+  font-size: 12px;
+}
+
+.ozon-brand-search-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.ozon-brand-search-row input {
+  flex: 1;
+}
+
+.ozon-brand-search-row button {
+  width: 42px;
+  height: 40px;
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  background: #ffffff;
+  cursor: pointer;
+  font-size: 16px;
+}
+
+.ozon-brand-search-row button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.ozon-brand-options {
+  margin-top: 8px;
+  display: grid;
+  gap: 6px;
+  max-height: 240px;
+  overflow-y: auto;
+}
+
+.ozon-brand-options button {
+  width: 100%;
+  text-align: left;
+  padding: 8px 12px;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  background: #ffffff;
+  color: #111827;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: border-color 0.14s, background 0.14s;
+}
+
+.ozon-brand-options button:hover {
+  border-color: #2563eb;
+  background: #eff6ff;
+}

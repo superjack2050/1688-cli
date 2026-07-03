@@ -392,6 +392,7 @@ async function getCategoryAttributeValues(userDataPath, params = {}) {
   const language = clean(params.language, 'ZH_HANS') || 'ZH_HANS';
   const limit = Math.min(2000, Math.max(1, Number(params.limit || 2000) || 2000));
   const lastValueId = Number(params.lastValueId || params.last_value_id || 0);
+  const query = clean(params.query || params.value || params.search || '', '');
 
   if (!descriptionCategoryId || !typeId || !attributeId) {
     throw new Error('加载 Ozon 字典值需要 description_category_id、type_id 和 attribute_id。');
@@ -410,6 +411,7 @@ async function getCategoryAttributeValues(userDataPath, params = {}) {
     limit,
     language,
   };
+  if (query) body.value = query;
   if (lastValueId > 0) body.last_value_id = lastValueId;
 
   const response = await callOzonSellerApi(shop, '/v1/description-category/attribute/values', body);
@@ -422,6 +424,7 @@ async function getCategoryAttributeValues(userDataPath, params = {}) {
     descriptionCategoryId,
     typeId,
     attributeId,
+    query,
     values: normalizeAttributeValues(response.data),
     hasNext: response.data?.has_next === true,
     raw: response.data,

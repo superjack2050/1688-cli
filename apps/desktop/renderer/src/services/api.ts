@@ -246,6 +246,7 @@ export interface OzonAttributeValuesResponse {
   descriptionCategoryId: number;
   typeId: number;
   attributeId: number;
+  query?: string;
   values: OzonAttributeValue[];
   hasNext: boolean;
   raw?: unknown;
@@ -296,7 +297,7 @@ interface DesktopApi {
     getCategoryTree: (options?: { forceRefresh?: boolean; language?: string }) => Promise<OzonCategoryTreeResponse>;
     searchCategories: (query: string, options?: { limit?: number; forceRefresh?: boolean; language?: string }) => Promise<OzonCategorySearchResponse>;
     getCategoryAttributes: (params: { descriptionCategoryId: number; typeId: number; language?: string }) => Promise<OzonCategoryAttributesResponse>;
-    getCategoryAttributeValues: (params: { descriptionCategoryId: number; typeId: number; attributeId: number; language?: string; limit?: number; lastValueId?: number }) => Promise<OzonAttributeValuesResponse>;
+    getCategoryAttributeValues: (params: { descriptionCategoryId: number; typeId: number; attributeId: number; language?: string; limit?: number; lastValueId?: number; query?: string; value?: string; search?: string }) => Promise<OzonAttributeValuesResponse>;
     generateDraft: (rows: Array<Record<string, unknown>>) => Promise<OzonDraft>;
     submitDraft: (draft: OzonDraft, confirmed: boolean) => Promise<Record<string, unknown>>;
   };
