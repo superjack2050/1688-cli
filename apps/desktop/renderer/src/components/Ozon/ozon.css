@@ -1083,11 +1083,156 @@
   inset: 0;
   z-index: 9998;
   display: flex;
+  align-items: stretch;
   justify-content: flex-end;
+  gap: 16px;
   padding: 18px;
   background: rgba(15,23,42,0.24);
   backdrop-filter: blur(10px);
   -webkit-backdrop-filter: blur(10px);
+}
+
+.ozon-product-variant-rail {
+  position: absolute;
+  left: 14px;
+  top: 18px;
+  bottom: 18px;
+  width: 220px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  border: 1px solid rgba(255,255,255,0.72);
+  border-radius: 24px;
+  padding: 14px;
+  background:
+    radial-gradient(circle at 22% 0%, rgba(219,234,254,0.56), transparent 36%),
+    linear-gradient(145deg, rgba(255,255,255,0.78), rgba(255,255,255,0.42));
+  box-shadow: 0 24px 58px rgba(15,23,42,0.18), inset 0 1px 0 rgba(255,255,255,0.78);
+  overflow: hidden;
+}
+
+.ozon-product-variant-head {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+}
+
+.ozon-product-variant-head span {
+  display: block;
+  color: #64748b;
+  font-size: 11px;
+  font-weight: 850;
+}
+
+.ozon-product-variant-head strong {
+  display: block;
+  margin-top: 3px;
+  color: #0f172a;
+  font-size: 16px;
+  font-weight: 950;
+}
+
+.ozon-product-variant-head small {
+  width: fit-content;
+  max-width: 100%;
+  min-height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-start;
+  border-radius: 999px;
+  padding: 0 8px;
+  color: #b45309;
+  background: rgba(254,243,199,0.78);
+  font-size: 10px;
+  font-weight: 900;
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ozon-product-variant-dims {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.ozon-product-variant-dims span {
+  min-height: 24px;
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 0 9px;
+  color: #1e3a8a;
+  background: rgba(219,234,254,0.76);
+  font-size: 11px;
+  font-weight: 850;
+}
+
+.ozon-product-variant-list {
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  overflow-y: auto;
+  padding-right: 3px;
+}
+
+.ozon-product-variant-list::-webkit-scrollbar { width: 6px; }
+.ozon-product-variant-list::-webkit-scrollbar-track { background: transparent; }
+.ozon-product-variant-list::-webkit-scrollbar-thumb { background: rgba(100,116,139,0.30); border-radius: 999px; }
+
+.ozon-product-variant-item {
+  min-width: 0;
+  display: grid;
+  gap: 6px;
+  border: 1px solid rgba(148,163,184,0.18);
+  border-radius: 16px;
+  padding: 10px;
+  background: rgba(255,255,255,0.64);
+}
+
+.ozon-product-variant-item div {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.ozon-product-variant-item strong,
+.ozon-product-variant-item span,
+.ozon-product-variant-item small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ozon-product-variant-item strong {
+  color: #0f172a;
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.ozon-product-variant-item span {
+  color: #334155;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.ozon-product-variant-item small,
+.ozon-product-variant-empty {
+  color: #64748b;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.ozon-product-variant-empty {
+  border: 1px dashed rgba(148,163,184,0.30);
+  border-radius: 16px;
+  padding: 12px;
+  text-align: center;
+  background: rgba(255,255,255,0.52);
 }
 
 .ozon-product-detail-panel {
@@ -1722,7 +1867,6 @@
 }
 
 .ozon-draft-page-hint,
-.ozon-draft-field-help,
 .ozon-draft-status-row span {
   color: #64748b;
   font-size: 13px;
@@ -1783,6 +1927,131 @@
 .ozon-draft-field textarea:focus {
   border-color: #1677ff;
   box-shadow: 0 0 0 3px rgba(22,119,255,0.10);
+}
+
+.ozon-dictionary-field {
+  position: relative;
+  min-width: 0;
+}
+
+.ozon-dictionary-trigger {
+  width: 100%;
+  min-height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  border: 1px solid rgba(148,163,184,0.36);
+  border-radius: 5px;
+  background: #fff;
+  color: #0f172a;
+  padding: 0 12px;
+  cursor: pointer;
+  text-align: left;
+}
+
+.ozon-dictionary-trigger span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 14px;
+  font-weight: 650;
+}
+
+.ozon-dictionary-trigger b {
+  flex: 0 0 auto;
+  color: #1677ff;
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.ozon-dictionary-dropdown {
+  position: absolute;
+  z-index: 50;
+  top: calc(100% + 6px);
+  left: 0;
+  right: 0;
+  display: grid;
+  gap: 8px;
+  border: 1px solid rgba(148,163,184,0.28);
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 18px 42px rgba(15,23,42,0.16);
+  padding: 10px;
+}
+
+.ozon-dictionary-dropdown input {
+  height: 34px;
+  padding: 0 10px;
+}
+
+.ozon-dictionary-dropdown > small {
+  color: #64748b;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.ozon-dictionary-options {
+  max-height: 260px;
+  overflow: auto;
+  display: grid;
+  gap: 6px;
+}
+
+.ozon-dictionary-options button {
+  min-width: 0;
+  min-height: 40px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-items: center;
+  gap: 4px 8px;
+  border: 1px solid rgba(148,163,184,0.20);
+  border-radius: 7px;
+  background: #f8fafc;
+  color: #0f172a;
+  padding: 8px 10px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.ozon-dictionary-options button.selected {
+  border-color: rgba(22,119,255,0.42);
+  background: #eff6ff;
+}
+
+.ozon-dictionary-options img {
+  grid-row: span 2;
+  width: 28px;
+  height: 28px;
+  border-radius: 5px;
+  object-fit: cover;
+}
+
+.ozon-dictionary-options span,
+.ozon-dictionary-options small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ozon-dictionary-options span {
+  font-size: 13px;
+  font-weight: 850;
+}
+
+.ozon-dictionary-options small,
+.ozon-dictionary-state {
+  color: #64748b;
+  font-size: 11px;
+  font-weight: 750;
+}
+
+.ozon-dictionary-state {
+  border-radius: 7px;
+  background: #f8fafc;
+  padding: 10px;
 }
 
 .ozon-draft-form-grid.two {
@@ -2020,6 +2289,99 @@
   word-break: break-word;
 }
 
+.ozon-variant-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  border: 1px solid rgba(148,163,184,0.22);
+  border-radius: 8px;
+  padding: 12px;
+  background: #f8fafc;
+}
+
+.ozon-variant-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.ozon-variant-head span,
+.ozon-variant-row small {
+  color: #64748b;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.ozon-variant-head strong {
+  display: block;
+  margin-top: 2px;
+  color: #0f172a;
+  font-size: 15px;
+}
+
+.ozon-variant-head small {
+  color: #475569;
+  font-size: 11px;
+  font-weight: 850;
+  text-align: right;
+}
+
+.ozon-variant-dimensions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.ozon-variant-dimensions span {
+  min-height: 26px;
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  border-radius: 999px;
+  padding: 0 9px;
+  background: rgba(219,234,254,0.72);
+  color: #1e3a8a;
+  font-size: 11px;
+  font-weight: 850;
+  overflow-wrap: anywhere;
+}
+
+.ozon-variant-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.ozon-variant-row {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+  border: 1px solid rgba(148,163,184,0.18);
+  border-radius: 8px;
+  padding: 9px 10px;
+  background: rgba(255,255,255,0.72);
+}
+
+.ozon-variant-row strong,
+.ozon-variant-row span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ozon-variant-row strong {
+  color: #0f172a;
+  font-size: 12px;
+}
+
+.ozon-variant-row span {
+  color: #334155;
+  font-size: 12px;
+  font-weight: 800;
+}
+
 .ozon-draft-payload-preview {
   flex: 1;
   min-height: 220px;
@@ -2071,6 +2433,12 @@
   margin-top: auto;
   justify-content: flex-end;
   flex-wrap: wrap;
+}
+
+@media (max-width: 1420px) {
+  .ozon-product-variant-rail {
+    display: none;
+  }
 }
 
 @media (max-width: 900px) {

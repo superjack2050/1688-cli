@@ -7,6 +7,34 @@ const ATTR_DESCRIPTION = 4191;
 const ATTR_TAGS = 23171;
 const DEFAULT_IMPORT_POLL_ATTEMPTS = 10;
 const DEFAULT_IMPORT_POLL_DELAY_MS = 2000;
+const PRODUCT_IMPORT_ITEM_KEYS = new Set([
+  'attributes',
+  'barcode',
+  'color_image',
+  'complex_attributes',
+  'currency_code',
+  'depth',
+  'description_category_id',
+  'dimension_unit',
+  'geo_names',
+  'height',
+  'images',
+  'images360',
+  'name',
+  'new_description_category_id',
+  'offer_id',
+  'old_price',
+  'pdf_list',
+  'price',
+  'primary_image',
+  'promotions',
+  'service_type',
+  'type_id',
+  'vat',
+  'weight',
+  'weight_unit',
+  'width',
+]);
 
 async function generateOzonDraft(settings, rows = []) {
   const sourceRows = Array.isArray(rows) ? rows.filter((row) => row && typeof row === 'object') : [];
@@ -23,13 +51,20 @@ async function generateOzonDraft(settings, rows = []) {
   }
 
   const items = sourceRows.map((row, index) => buildOzonItem(row, normalized, settings, index));
-  const missing = collectDraftMissing(items, { sourceRows, generated: normalized });
+  const variant = buildVariantDraft(sourceRows, items, normalized);
+  if (variant) {
+    normalized.variant_mapping = variant;
+    normalized.variant_mapping_confirmed = variant.confirmed === true;
+    applyVariantMetadata(items, variant);
+  }
+  const missing = collectDraftMissing(items, { sourceRows, generated: normalized, variant });
 
   return {
     draftId: `ozon-draft-${Date.now()}`,
     status: missing.length ? 'needs_review' : 'ready',
     sourceRows,
     generated: normalized,
+    variant,
     items,
     missing,
     createdAt: new Date().toISOString(),
@@ -47,7 +82,8 @@ async function submitOzonDraft(settings, draft, options = {}) {
 
   await validateRequiredCategoryAttributes(settings, items);
 
-  const importData = await callOzonSellerApi(settings.ozon, '/v3/product/import', { items });
+  const importItems = items.map((item) => toOzonImportItem(item));
+  const importData = await callOzonSellerApi(settings.ozon, '/v3/product/import', { items: importItems });
   const taskId = extractImportTaskId(importData);
   if (!taskId) {
     throw new Error(`Ozon 导入未返回 task_id：${stringifyForError(importData)}`);
@@ -73,8 +109,8 @@ async function submitOzonDraft(settings, draft, options = {}) {
     };
   }
 
-  const priceResult = await updateImportPrices(settings.ozon, items);
-  const stockPlan = buildStockPayload(settings, draft, items);
+  const priceResult = await updateImportPrices(settings.ozon, importItems);
+  const stockPlan = buildStockPayload(settings, draft, importItems);
   const warnings = [];
   let stockResult = null;
 
@@ -118,6 +154,15 @@ async function callOzonSellerApi(ozon, endpoint, body) {
     throw new Error(`Ozon API ${endpoint} 失败：HTTP ${response.status} ${stringifyForError(data)}`);
   }
   return data;
+}
+
+function toOzonImportItem(item) {
+  const result = {};
+  const source = item && typeof item === 'object' ? item : {};
+  for (const [key, value] of Object.entries(source)) {
+    if (PRODUCT_IMPORT_ITEM_KEYS.has(key)) result[key] = value;
+  }
+  return result;
 }
 
 async function validateRequiredCategoryAttributes(settings, items) {
@@ -596,6 +641,81 @@ function buildOzonItem(row, generated, settings, index) {
   };
 }
 
+function buildVariantDraft(sourceRows, items, generated) {
+  const rows = Array.isArray(sourceRows) ? sourceRows : [];
+  if (rows.length <= 1) return null;
+
+  const parsedRows = rows.map((row) => parseSkuSpecs(row));
+  const sourceKeys = uniqueStrings(parsedRows.flatMap((specs) => Object.keys(specs)));
+  const dimensions = sourceKeys.map((key) => {
+    const values = uniqueStrings(parsedRows.map((specs) => specs[key]));
+    return {
+      source_name: key,
+      values,
+      distinguishes_variants: values.length > 1,
+      ozon_attribute_id: null,
+      ozon_attribute_name: '',
+      dictionary_id: null,
+      mapping_status: 'needs_ozon_attribute',
+    };
+  });
+  const distinguishing = dimensions.filter((dimension) => dimension.distinguishes_variants);
+  const warnings = [];
+  if (!dimensions.length) warnings.push('未能从 1688 SKU 文本解析出规格键值。');
+  if (dimensions.length && !distinguishing.length) warnings.push('多个 SKU 未发现不同的规格值。');
+
+  const groupKey = stableVariantGroupKey(rows, generated);
+  const groupValue = cleanText(generated.model_name || generated.title_ru);
+  const variants = items.map((item, index) => {
+    const row = rows[index] || {};
+    return {
+      item_index: index,
+      offer_id: cleanText(item?.offer_id),
+      source_offer_id: sourceOfferId(row),
+      source_sku_id: cleanText(row.sku_id || row.skuId),
+      source_sku_name: cleanText(row.sku_name || row.skuName || row.sku_specs_text || row.specs),
+      values: parsedRows[index] || {},
+      price: cleanText(item?.price),
+      stock: stockOf(row, item),
+      image: cleanText(item?.primary_image),
+    };
+  });
+
+  return {
+    type: 'ozon_model_variants',
+    status: dimensions.length && distinguishing.length ? 'needs_attribute_mapping' : 'unparsed',
+    confirmed: false,
+    group_key: groupKey,
+    group_attribute_id: ATTR_MODEL_NAME,
+    group_attribute_name: 'model_name',
+    group_value: groupValue,
+    dimensions,
+    variants,
+    warnings,
+  };
+}
+
+function applyVariantMetadata(items, variant) {
+  if (!Array.isArray(items) || !variant) return;
+  const variants = Array.isArray(variant.variants) ? variant.variants : [];
+  for (let index = 0; index < items.length; index++) {
+    const item = items[index];
+    if (!item || typeof item !== 'object') continue;
+    const entry = variants[index] || {};
+    item._variant = {
+      group_key: variant.group_key,
+      group_attribute_id: variant.group_attribute_id,
+      group_value: variant.group_value,
+      item_index: index,
+      source_offer_id: entry.source_offer_id || '',
+      source_sku_id: entry.source_sku_id || '',
+      source_sku_name: entry.source_sku_name || '',
+      values: entry.values || {},
+      mapping_status: variant.status,
+    };
+  }
+}
+
 function collectDraftMissing(items, draft) {
   const missing = new Set();
   for (const item of items) {
@@ -615,7 +735,93 @@ function hasUnconfirmedVariantMapping(draft) {
   const sourceRows = Array.isArray(draft?.sourceRows) ? draft.sourceRows : [];
   const generated = draft?.generated && typeof draft.generated === 'object' ? draft.generated : {};
   if (sourceRows.length <= 1) return false;
+  const variant = variantMappingOf(draft, generated);
+  if (variant.confirmed === true || variant.status === 'confirmed') return false;
   return generated.variant_mapping_confirmed !== true && generated.variantMappingConfirmed !== true;
+}
+
+function variantMappingOf(draft, generated) {
+  const root = draft?.variant && typeof draft.variant === 'object' ? draft.variant : null;
+  const fromGenerated = generated?.variant_mapping && typeof generated.variant_mapping === 'object'
+    ? generated.variant_mapping
+    : null;
+  return root || fromGenerated || {};
+}
+
+function parseSkuSpecs(row) {
+  const source = row && typeof row === 'object' ? row : {};
+  const structured = objectSpecValues(
+    source.sku_specs_structured ||
+    source.variant_specs ||
+    source.specs_structured ||
+    source.specValues
+  );
+  if (Object.keys(structured).length) return structured;
+
+  const raw = cleanText(
+    source.sku_specs_text ||
+    source.sku_name ||
+    source.skuName ||
+    source.specs ||
+    source.variant_name ||
+    source.variantName
+  );
+  const text = decodeSpecText(raw);
+  if (!text) return {};
+
+  const specs = {};
+  const chunks = text.split(/\s*(?:;|；|\||>|\/)\s*/).map((item) => item.trim()).filter(Boolean);
+  for (const chunk of chunks) {
+    const match = chunk.match(/^([^:=：]+)\s*[:：=]\s*(.+)$/);
+    if (!match) continue;
+    const key = cleanSpecPart(match[1]);
+    const value = cleanSpecPart(match[2]);
+    if (key && value) specs[key] = value;
+  }
+
+  if (!Object.keys(specs).length) specs['规格'] = text;
+  return specs;
+}
+
+function objectSpecValues(value) {
+  const result = {};
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return result;
+  for (const [rawKey, rawValue] of Object.entries(value)) {
+    const key = cleanSpecPart(rawKey);
+    const text = cleanSpecPart(rawValue);
+    if (key && text) result[key] = text;
+  }
+  return result;
+}
+
+function decodeSpecText(value) {
+  return cleanText(value)
+    .replace(/&gt;/gi, '>')
+    .replace(/&amp;/gi, '&')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function cleanSpecPart(value) {
+  return cleanText(value).replace(/^["'“”‘’]+|["'“”‘’]+$/g, '').trim();
+}
+
+function stableVariantGroupKey(rows, generated) {
+  const first = rows[0] || {};
+  const raw = [
+    sourceOfferId(first),
+    first.detail_url,
+    first.product_title,
+    generated?.model_name,
+    generated?.title_ru,
+  ].map((item) => cleanText(item)).join('|');
+  return `1688-model-${crypto.createHash('sha1').update(raw).digest('hex').slice(0, 16)}`;
+}
+
+function sourceOfferId(row) {
+  const source = row && typeof row === 'object' ? row : {};
+  const raw1688 = source.raw_1688 && typeof source.raw_1688 === 'object' ? source.raw_1688 : {};
+  return cleanText(source.source_offer_id || source.offer_id || source.offerId || raw1688.offerId || raw1688.offer_id);
 }
 
 function imageUrls(row) {

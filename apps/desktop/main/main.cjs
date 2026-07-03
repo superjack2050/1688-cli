@@ -36,6 +36,7 @@ const {
   getCategoryTree: getOzonCategoryTree,
   searchCategories: searchOzonCategories,
   getCategoryAttributes: getOzonCategoryAttributes,
+  getCategoryAttributeValues: getOzonCategoryAttributeValues,
 } = require('../ozon-settings.cjs');
 
 const {
@@ -243,6 +244,9 @@ function registerIpc() {
   );
   ipcMain.handle('desktop:getOzonCategoryAttributes', (_event, params) =>
     getOzonCategoryAttributes(userDataDir(), params || {}),
+  );
+  ipcMain.handle('desktop:getOzonCategoryAttributeValues', (_event, params) =>
+    getOzonCategoryAttributeValues(userDataDir(), params || {}),
   );
   ipcMain.handle('desktop:generateOzonDraft', async (_event, rows) =>
     generateOzonDraft({ ...loadOzonSettings(userDataDir(), { includeSecrets: true }), userDataPath: userDataDir() }, rows),

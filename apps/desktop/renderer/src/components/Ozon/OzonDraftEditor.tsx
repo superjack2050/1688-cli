@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
   getApi,
+  type OzonAttributeValue,
   type OzonCategoryAttribute,
   type OzonCategoryEntry,
   type OzonCategoryRawNode,
@@ -46,6 +47,8 @@ type DraftBuildResult = {
   firstItem: Record<string, unknown>;
   missing: string[];
 };
+
+type DictionaryValueIds = Record<string, Record<string, number>>;
 
 type Props = {
   task: OzonListingTask;
@@ -127,6 +130,25 @@ function attributeValuesById(item: Record<string, unknown>): Record<string, stri
   return values;
 }
 
+function attributeDictionaryIdsById(item: Record<string, unknown>): DictionaryValueIds {
+  const values: DictionaryValueIds = {};
+  const attrs = Array.isArray(item.attributes) ? item.attributes : [];
+  for (const rawAttr of attrs) {
+    const attr = objectOf(rawAttr);
+    const attrId = Number(attr.id);
+    if (!attrId) continue;
+    const attrValues = Array.isArray(attr.values) ? attr.values : [];
+    for (const rawValue of attrValues) {
+      const value = objectOf(rawValue);
+      const label = text(value.value);
+      const dictionaryValueId = Number(value.dictionary_value_id || 0);
+      if (!label || dictionaryValueId <= 0) continue;
+      values[String(attrId)] = { ...(values[String(attrId)] || {}), [label]: dictionaryValueId };
+    }
+  }
+  return values;
+}
+
 function lineList(value: string): string[] {
   return unique(
     String(value || '')
@@ -176,7 +198,7 @@ function normalizeTagsForPayload(value: string): string {
   ).join('\n');
 }
 
-function buildAttribute(attrId: number, value: string): Record<string, unknown> | null {
+function buildAttribute(attrId: number, value: string, dictionaryIds?: Record<string, number>): Record<string, unknown> | null {
   const lines = String(value || '')
     .split(/\r?\n/)
     .map((line) => line.trim())
@@ -185,7 +207,12 @@ function buildAttribute(attrId: number, value: string): Record<string, unknown> 
   return {
     id: attrId,
     complex_id: 0,
-    values: lines.map((line) => ({ value: line })),
+    values: lines.map((line) => {
+      const dictionaryValueId = Number(dictionaryIds?.[line] || 0);
+      return dictionaryValueId > 0
+        ? { dictionary_value_id: dictionaryValueId, value: line }
+        : { value: line };
+    }),
   };
 }
 
@@ -210,6 +237,7 @@ function parseCustomAttributes(value: string): Record<string, unknown>[] {
 function buildDynamicAttributes(
   dynamicValues: Record<string, string>,
   categoryAttributes: OzonCategoryAttribute[],
+  dictionaryValueIds: DictionaryValueIds,
 ): Record<string, unknown>[] {
   const attrs: Record<string, unknown>[] = [];
   const seen = new Set<number>();
@@ -219,7 +247,7 @@ function buildDynamicAttributes(
     const attrId = Number(rawId);
     if (!attrId || CONTROLLED_ATTR_IDS.has(attrId) || seen.has(attrId)) continue;
     if (knownIds.size > 0 && !knownIds.has(attrId)) continue;
-    const attr = buildAttribute(attrId, value);
+    const attr = buildAttribute(attrId, value, dictionaryValueIds[String(attrId)]);
     if (!attr) continue;
     attrs.push(attr);
     seen.add(attrId);
@@ -233,9 +261,10 @@ function buildAttributes(
   form: DraftForm,
   dynamicValues: Record<string, string>,
   categoryAttributes: OzonCategoryAttribute[],
+  dictionaryValueIds: DictionaryValueIds,
 ): Record<string, unknown>[] {
   const customAttrs = parseCustomAttributes(form.customAttributes);
-  const dynamicAttrs = buildDynamicAttributes(dynamicValues, categoryAttributes);
+  const dynamicAttrs = buildDynamicAttributes(dynamicValues, categoryAttributes, dictionaryValueIds);
   const customIds = new Set(customAttrs.map((attr) => Number(attr.id)).filter(Boolean));
   const dynamicIds = new Set(dynamicAttrs.map((attr) => Number(attr.id)).filter(Boolean));
   const baseAttrs = Array.isArray(baseItem.attributes) ? baseItem.attributes : [];
@@ -392,6 +421,7 @@ function buildDraft(
   form: DraftForm,
   dynamicValues: Record<string, string>,
   categoryAttributes: OzonCategoryAttribute[],
+  dictionaryValueIds: DictionaryValueIds,
 ): DraftBuildResult | null {
   if (!task.draft) return null;
 
@@ -401,13 +431,13 @@ function buildDraft(
   const images = lineList(form.images).map(normalizeImageUrl).filter(Boolean).slice(0, 15);
   const descriptionCategoryId = intForPayload(form.descriptionCategoryId);
   const typeId = intForPayload(form.typeId);
-  const attributes = buildAttributes(baseFirst, form, dynamicValues, categoryAttributes);
+  const attributes = buildAttributes(baseFirst, form, dynamicValues, categoryAttributes, dictionaryValueIds);
 
   const firstItem: Record<string, unknown> = {
     ...baseFirst,
     name: form.name.trim().slice(0, 500),
     barcode: form.barcode.trim(),
-    offer_id: form.offerId.trim().slice(0, 100),
+    offer_id: form.offerId.trim().slice(0, 50),
     price: priceForPayload(form.price, '1'),
     old_price: priceForPayload(form.oldPrice, '0'),
     currency_code: form.currencyCode.trim() || 'CNY',
@@ -489,6 +519,29 @@ function sourceSummary(task: OzonListingTask): string {
   ].filter(Boolean).join(' / ') || '来自 1688 深采结果';
 }
 
+function variantOf(draft?: OzonDraft): Record<string, unknown> {
+  if (!draft) return {};
+  const generated = objectOf(draft.generated);
+  const root = objectOf(draft.variant);
+  return Object.keys(root).length ? root : objectOf(generated.variant_mapping);
+}
+
+function variantRows(variant: Record<string, unknown>): Record<string, unknown>[] {
+  return Array.isArray(variant.variants) ? variant.variants.map(objectOf).filter(Boolean) : [];
+}
+
+function variantDimensions(variant: Record<string, unknown>): Record<string, unknown>[] {
+  return Array.isArray(variant.dimensions) ? variant.dimensions.map(objectOf).filter(Boolean) : [];
+}
+
+function variantValuesText(values: unknown): string {
+  const obj = objectOf(values);
+  return Object.entries(obj)
+    .map(([key, value]) => `${key}: ${text(value)}`)
+    .filter((line) => !line.endsWith(': '))
+    .join(' / ');
+}
+
 function categoryId(entry: OzonCategoryEntry): string {
   return `${entry.descriptionCategoryId || entry.description_category_id}:${entry.typeId || entry.type_id}`;
 }
@@ -512,6 +565,154 @@ function PreviewImage({ src }: { src: string }) {
 function FieldError({ show, text: value }: { show: boolean; text: string }) {
   if (!show) return null;
   return <small className="ozon-draft-error-text">{value}</small>;
+}
+
+function DictionaryAttributeField({
+  attr,
+  value,
+  valueIds,
+  descriptionCategoryId,
+  typeId,
+  onChange,
+}: {
+  attr: OzonCategoryAttribute;
+  value: string;
+  valueIds: Record<string, number>;
+  descriptionCategoryId: number;
+  typeId: number;
+  onChange: (value: string, valueIds: Record<string, number>) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [message, setMessage] = useState('');
+  const [query, setQuery] = useState('');
+  const [options, setOptions] = useState<OzonAttributeValue[]>([]);
+  const selected = lineList(value);
+  const selectedSet = new Set(selected);
+  const multi = attr.isCollection || attr.maxValueCount !== 1;
+  const maxCount = attr.maxValueCount > 1 ? attr.maxValueCount : 0;
+  const filteredOptions = options.filter((option) => {
+    const needle = `${option.value} ${option.info || ''} ${option.id}`.toLowerCase();
+    return !query.trim() || needle.includes(query.trim().toLowerCase());
+  });
+
+  useEffect(() => {
+    setOpen(false);
+    setLoading(false);
+    setMessage('');
+    setQuery('');
+    setOptions([]);
+  }, [attr.id, descriptionCategoryId, typeId]);
+
+  async function loadValues() {
+    if (loading || options.length) return;
+    if (!descriptionCategoryId || !typeId) {
+      setMessage('请先选择 Ozon 类目和类型。');
+      return;
+    }
+
+    setLoading(true);
+    setMessage('');
+    try {
+      const response = await getApi().ozon.getCategoryAttributeValues({
+        descriptionCategoryId,
+        typeId,
+        attributeId: attr.id,
+        language: 'ZH_HANS',
+        limit: 2000,
+      });
+      setOptions(response.values || []);
+      setMessage(response.hasNext ? '字典值较多，已显示前 2000 个。' : '');
+    } catch (error) {
+      setOptions([]);
+      setMessage(error instanceof Error ? error.message : String(error));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function openDropdown() {
+    setOpen(true);
+    void loadValues();
+  }
+
+  function selectOption(option: OzonAttributeValue) {
+    const label = text(option.value);
+    if (!label) return;
+
+    if (!multi) {
+      onChange(label, { [label]: option.id });
+      setOpen(false);
+      setQuery('');
+      return;
+    }
+
+    const nextSelected = selectedSet.has(label)
+      ? selected.filter((item) => item !== label)
+      : [...selected, label];
+
+    if (!selectedSet.has(label) && maxCount > 0 && selected.length >= maxCount) {
+      setMessage(`最多选择 ${maxCount} 个值。`);
+      return;
+    }
+
+    const nextIds: Record<string, number> = {};
+    for (const item of nextSelected) {
+      const id = item === label ? option.id : valueIds[item];
+      if (id) nextIds[item] = id;
+    }
+    onChange(nextSelected.join('\n'), nextIds);
+  }
+
+  return (
+    <div
+      className="ozon-dictionary-field"
+      onBlur={(event) => {
+        const next = event.relatedTarget;
+        if (!next || !event.currentTarget.contains(next as Node)) setOpen(false);
+      }}
+    >
+      <button type="button" className="ozon-dictionary-trigger" onClick={openDropdown}>
+        <span>{selected.length ? selected.join(' / ') : '点击选择 Ozon 字典值'}</span>
+        <b>{loading ? '加载中' : '选择'}</b>
+      </button>
+
+      {open && (
+        <div className="ozon-dictionary-dropdown">
+          <input
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            onFocus={() => void loadValues()}
+            placeholder="搜索已加载字典值"
+          />
+          {message && <small>{message}</small>}
+          <div className="ozon-dictionary-options">
+            {loading ? (
+              <div className="ozon-dictionary-state">正在加载 Ozon 字典值...</div>
+            ) : filteredOptions.length ? (
+              filteredOptions.map((option) => {
+                const label = text(option.value);
+                const selectedOption = selectedSet.has(label);
+                return (
+                  <button
+                    key={option.id}
+                    type="button"
+                    className={selectedOption ? 'selected' : ''}
+                    onClick={() => selectOption(option)}
+                  >
+                    <span>{label}</span>
+                    <small>ID {option.id}{option.info ? ` / ${option.info}` : ''}</small>
+                  </button>
+                );
+              })
+            ) : (
+              <div className="ozon-dictionary-state">暂无可选字典值</div>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
 }
 
 type CategoryTreeViewNode = {
@@ -742,12 +943,14 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onTo
   const [categoryTreeLoading, setCategoryTreeLoading] = useState(false);
   const [showCategoryTree, setShowCategoryTree] = useState(true);
   const [expandedCategoryIds, setExpandedCategoryIds] = useState<Record<string, boolean>>({});
+  const [dictionaryValueIds, setDictionaryValueIds] = useState<DictionaryValueIds>(() => attributeDictionaryIdsById(firstItemOf(task)));
 
   useEffect(() => {
     const nextForm = createDraftForm(task);
     setForm(nextForm);
     setCategoryQuery(nextForm.categoryPath);
     setDynamicValues(attributeValuesById(firstItemOf(task)));
+    setDictionaryValueIds(attributeDictionaryIdsById(firstItemOf(task)));
     setCategoryAttributes([]);
     setMessage('');
     setActiveStep(0);
@@ -810,8 +1013,8 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onTo
     [categoryAttributes, dynamicValues, form],
   );
   const buildResult = useMemo(
-    () => buildDraft(task, form, dynamicValues, categoryAttributes),
-    [categoryAttributes, dynamicValues, form, task],
+    () => buildDraft(task, form, dynamicValues, categoryAttributes, dictionaryValueIds),
+    [categoryAttributes, dictionaryValueIds, dynamicValues, form, task],
   );
   const missing = buildResult?.missing || task.missingFields || task.draft?.missing || [];
   const firstItem = buildResult?.firstItem || firstItemOf(task);
@@ -826,6 +1029,10 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onTo
   ].filter(Boolean);
   const featureAttributes = visibleCategoryAttributes(categoryAttributes, 'feature');
   const mediaAttributes = visibleCategoryAttributes(categoryAttributes, 'media');
+  const currentDraft = buildResult?.draft || task.draft;
+  const variant = variantOf(currentDraft);
+  const variantItems = variantRows(variant);
+  const variantDims = variantDimensions(variant);
 
   const visibleCategoryTree = useMemo(
     () => filterCategoryTree(categoryTreeNodes, categoryQuery),
@@ -846,6 +1053,10 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onTo
 
   function updateDynamicValue(attrId: number, value: string) {
     setDynamicValues((prev) => ({ ...prev, [String(attrId)]: value }));
+  }
+
+  function updateDictionaryValueIds(attrId: number, values: Record<string, number>) {
+    setDictionaryValueIds((prev) => ({ ...prev, [String(attrId)]: values }));
   }
 
   function applyCategory(entry: OzonCategoryEntry) {
@@ -908,7 +1119,7 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onTo
   }
 
   function applyDraft(showToast = true): DraftBuildResult | null {
-    const result = buildDraft(task, form, dynamicValues, categoryAttributes);
+    const result = buildDraft(task, form, dynamicValues, categoryAttributes, dictionaryValueIds);
     if (!result) {
       setMessage('当前任务还没有可编辑的 Ozon 草稿。');
       return null;
@@ -1184,7 +1395,19 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onTo
                   <span>
                     {attr.name}{attr.isRequired ? ' *' : ''}{attr.dictionaryId ? '（字典）' : ''}{attr.isAspect ? '（规格/Aspect）' : ''}
                   </span>
-                  {attr.maxValueCount !== 1 || attr.isCollection ? (
+                  {attr.dictionaryId ? (
+                    <DictionaryAttributeField
+                      attr={attr}
+                      value={dynamicValues[String(attr.id)] || ''}
+                      valueIds={dictionaryValueIds[String(attr.id)] || {}}
+                      descriptionCategoryId={intForPayload(form.descriptionCategoryId)}
+                      typeId={intForPayload(form.typeId)}
+                      onChange={(nextValue, nextIds) => {
+                        updateDynamicValue(attr.id, nextValue);
+                        updateDictionaryValueIds(attr.id, nextIds);
+                      }}
+                    />
+                  ) : attr.maxValueCount !== 1 || attr.isCollection ? (
                     <textarea
                       value={dynamicValues[String(attr.id)] || ''}
                       onChange={(event) => updateDynamicValue(attr.id, event.target.value)}
@@ -1195,10 +1418,9 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onTo
                     <input
                       value={dynamicValues[String(attr.id)] || ''}
                       onChange={(event) => updateDynamicValue(attr.id, event.target.value)}
-                      placeholder={attr.dictionaryId ? '输入或粘贴 Ozon 字典值' : '填写属性值'}
+                      placeholder="填写属性值"
                     />
                   )}
-                  {attr.description && <small className="ozon-draft-field-help">{attr.description}</small>}
                   <FieldError show={attemptedFeatures && attr.isRequired && !text(dynamicValues[String(attr.id)])} text="该类目必填特征不能为空" />
                 </label>
               ))}
@@ -1238,13 +1460,27 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onTo
               </div>
               {mediaAttributes.map((attr) => (
                 <label key={attr.id} className="ozon-draft-field wide">
-                  <span>{attr.name}{attr.isRequired ? ' *' : ''}</span>
-                  <textarea
-                    value={dynamicValues[String(attr.id)] || ''}
-                    onChange={(event) => updateDynamicValue(attr.id, event.target.value)}
-                    rows={attr.maxValueCount !== 1 || attr.isCollection ? 3 : 2}
-                    placeholder="填写媒体相关属性"
-                  />
+                  <span>{attr.name}{attr.isRequired ? ' *' : ''}{attr.dictionaryId ? '（字典）' : ''}</span>
+                  {attr.dictionaryId ? (
+                    <DictionaryAttributeField
+                      attr={attr}
+                      value={dynamicValues[String(attr.id)] || ''}
+                      valueIds={dictionaryValueIds[String(attr.id)] || {}}
+                      descriptionCategoryId={intForPayload(form.descriptionCategoryId)}
+                      typeId={intForPayload(form.typeId)}
+                      onChange={(nextValue, nextIds) => {
+                        updateDynamicValue(attr.id, nextValue);
+                        updateDictionaryValueIds(attr.id, nextIds);
+                      }}
+                    />
+                  ) : (
+                    <textarea
+                      value={dynamicValues[String(attr.id)] || ''}
+                      onChange={(event) => updateDynamicValue(attr.id, event.target.value)}
+                      rows={attr.maxValueCount !== 1 || attr.isCollection ? 3 : 2}
+                      placeholder="填写媒体相关属性"
+                    />
+                  )}
                 </label>
               ))}
             </div>
@@ -1285,8 +1521,41 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onTo
               {recommendationMissing.map((field) => <span key={field} className="soft">建议补充 {field}</span>)}
             </div>
 
+            {variantItems.length > 0 && (
+              <div className="ozon-variant-panel">
+                <div className="ozon-variant-head">
+                  <div>
+                    <span>变体计划</span>
+                    <strong>{variantItems.length} 个 SKU</strong>
+                  </div>
+                  <small>{text(variant.status) || '待确认'} / Ozon 属性 {text(variant.group_attribute_id) || '9048'}</small>
+                </div>
+                <div className="ozon-variant-dimensions">
+                  {variantDims.length ? (
+                    variantDims.map((dimension) => (
+                      <span key={text(dimension.source_name)}>
+                        {text(dimension.source_name)}: {Array.isArray(dimension.values) ? dimension.values.map(text).filter(Boolean).join(' / ') : '-'}
+                      </span>
+                    ))
+                  ) : (
+                    <span>未解析到规格维度</span>
+                  )}
+                </div>
+                <div className="ozon-variant-list">
+                  {variantItems.slice(0, 12).map((item, index) => (
+                    <div key={`${text(item.offer_id)}-${index}`} className="ozon-variant-row">
+                      <strong>{text(item.offer_id) || `SKU ${index + 1}`}</strong>
+                      <span>{variantValuesText(item.values) || text(item.source_sku_name) || '未解析规格'}</span>
+                      <small>库存 {text(item.stock) || '0'} / 价格 {text(item.price) || '-'}</small>
+                    </div>
+                  ))}
+                  {variantItems.length > 12 && <small>还有 {variantItems.length - 12} 个 SKU 未展开显示。</small>}
+                </div>
+              </div>
+            )}
+
             <pre className="ozon-draft-payload-preview">
-              {buildResult ? JSON.stringify({ items: buildResult.draft.items }, null, 2) : '暂无 payload'}
+              {buildResult ? JSON.stringify({ variant: buildResult.draft.variant || null, items: buildResult.draft.items }, null, 2) : '暂无 payload'}
             </pre>
 
             <div className="ozon-draft-nav-row">

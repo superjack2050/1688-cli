@@ -34,6 +34,7 @@ export function progressCardToOzonRows(item: ProgressOfferCardItem): Row[] {
     return baseRow({
       raw,
       offerId,
+      skuId,
       detailUrl,
       title: baseTitle,
       skuName: text(sku.specs) || `${baseTitle} SKU ${index + 1}`,
@@ -50,6 +51,7 @@ export function progressCardToOzonRows(item: ProgressOfferCardItem): Row[] {
 function baseRow(input: {
   raw: Row;
   offerId: string;
+  skuId?: string;
   detailUrl: string;
   title: string;
   skuName: string;
@@ -63,6 +65,9 @@ function baseRow(input: {
   const row: Row = {
     status: 'ok',
     offer_id: input.offerId,
+    source_offer_id: input.offerId,
+    sku_id: input.skuId || '',
+    sku_specs_text: input.skuName,
     detail_url: input.detailUrl,
     product_title: input.title,
     sku_name: input.skuName,

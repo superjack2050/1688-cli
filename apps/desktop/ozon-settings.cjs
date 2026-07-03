@@ -385,6 +385,50 @@ async function getCategoryAttributes(userDataPath, params = {}) {
   };
 }
 
+async function getCategoryAttributeValues(userDataPath, params = {}) {
+  const descriptionCategoryId = Number(params.descriptionCategoryId || params.description_category_id || 0);
+  const typeId = Number(params.typeId || params.type_id || 0);
+  const attributeId = Number(params.attributeId || params.attribute_id || 0);
+  const language = clean(params.language, 'ZH_HANS') || 'ZH_HANS';
+  const limit = Math.min(2000, Math.max(1, Number(params.limit || 2000) || 2000));
+  const lastValueId = Number(params.lastValueId || params.last_value_id || 0);
+
+  if (!descriptionCategoryId || !typeId || !attributeId) {
+    throw new Error('加载 Ozon 字典值需要 description_category_id、type_id 和 attribute_id。');
+  }
+
+  const settings = loadSettings(userDataPath, { includeSecrets: true });
+  const shop = settings.ozon || {};
+  if (!shop.clientId || !shop.apiKey) {
+    throw new Error('加载 Ozon 字典值需要先绑定 Client ID 和 API Key。');
+  }
+
+  const body = {
+    description_category_id: descriptionCategoryId,
+    type_id: typeId,
+    attribute_id: attributeId,
+    limit,
+    language,
+  };
+  if (lastValueId > 0) body.last_value_id = lastValueId;
+
+  const response = await callOzonSellerApi(shop, '/v1/description-category/attribute/values', body);
+  if (!response.ok) {
+    throw new Error(`加载 Ozon 字典值失败：HTTP ${response.data?.status || '?'} ${safeJson(response.data?.response || response.data)}`);
+  }
+
+  return {
+    ok: true,
+    descriptionCategoryId,
+    typeId,
+    attributeId,
+    values: normalizeAttributeValues(response.data),
+    hasNext: response.data?.has_next === true,
+    raw: response.data,
+    fetchedAt: new Date().toISOString(),
+  };
+}
+
 function extractQuota(data) {
   const found = findQuotaObject(data);
   if (!found) return null;
@@ -558,6 +602,20 @@ function normalizeCategoryAttributes(data) {
     .sort((a, b) => Number(b.isRequired) - Number(a.isRequired) || a.id - b.id);
 }
 
+function normalizeAttributeValues(data) {
+  const raw = Array.isArray(data?.result) ? data.result
+    : Array.isArray(data?.values) ? data.values
+      : [];
+  return raw
+    .map((item) => ({
+      id: Number(item?.id || item?.dictionary_value_id || 0),
+      value: clean(item?.value || item?.name || '', ''),
+      info: clean(item?.info, ''),
+      picture: clean(item?.picture, ''),
+    }))
+    .filter((item) => item.id > 0 && item.value);
+}
+
 function pickNumber(obj, keys) {
   for (const key of keys) {
     const value = obj?.[key];
@@ -608,4 +666,5 @@ module.exports = {
   getCategoryTree,
   searchCategories,
   getCategoryAttributes,
+  getCategoryAttributeValues,
 };

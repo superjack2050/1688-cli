@@ -519,6 +519,7 @@ select {
 }
 .deep-task-list {
   display: flex; flex-direction: column; gap: 8px;
+  flex: 1 1 auto;
   min-height: 0; max-height: calc(100vh - 220px);
   overflow-y: auto; padding-right: 3px; padding-bottom: 8px;
 }
@@ -598,6 +599,7 @@ select {
 .deep-task-status.queued { color: #64748b; background: rgba(241,245,249,0.9); }
 .deep-task-status.success { color: #16a34a; background: rgba(220,252,231,0.92); }
 .deep-task-status.failed { color: #dc2626; background: rgba(254,226,226,0.92); }
+
 .deep-task-status.needs-manual { color: #b45309; background: rgba(254,243,199,0.94); }
 
 .deep-task-meta {

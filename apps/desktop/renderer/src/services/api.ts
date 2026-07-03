@@ -128,6 +128,7 @@ export interface OzonDraft {
   status: string;
   sourceRows: Array<Record<string, unknown>>;
   generated: Record<string, unknown>;
+  variant?: Record<string, unknown> | null;
   items: Array<Record<string, unknown>>;
   missing: string[];
   createdAt: string;
@@ -233,6 +234,24 @@ export interface OzonCategoryAttributesResponse {
   fetchedAt: string;
 }
 
+export interface OzonAttributeValue {
+  id: number;
+  value: string;
+  info?: string;
+  picture?: string;
+}
+
+export interface OzonAttributeValuesResponse {
+  ok: boolean;
+  descriptionCategoryId: number;
+  typeId: number;
+  attributeId: number;
+  values: OzonAttributeValue[];
+  hasNext: boolean;
+  raw?: unknown;
+  fetchedAt: string;
+}
+
 // Raw window.desktopApi shape
 const api = (window as unknown as { desktopApi?: DesktopApi }).desktopApi;
 
@@ -277,6 +296,7 @@ interface DesktopApi {
     getCategoryTree: (options?: { forceRefresh?: boolean; language?: string }) => Promise<OzonCategoryTreeResponse>;
     searchCategories: (query: string, options?: { limit?: number; forceRefresh?: boolean; language?: string }) => Promise<OzonCategorySearchResponse>;
     getCategoryAttributes: (params: { descriptionCategoryId: number; typeId: number; language?: string }) => Promise<OzonCategoryAttributesResponse>;
+    getCategoryAttributeValues: (params: { descriptionCategoryId: number; typeId: number; attributeId: number; language?: string; limit?: number; lastValueId?: number }) => Promise<OzonAttributeValuesResponse>;
     generateDraft: (rows: Array<Record<string, unknown>>) => Promise<OzonDraft>;
     submitDraft: (draft: OzonDraft, confirmed: boolean) => Promise<Record<string, unknown>>;
   };
