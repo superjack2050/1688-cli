@@ -42,6 +42,7 @@ const {
 const {
   generateOzonDraft,
   submitOzonDraft,
+  generateOzonAttributeSuggestions,
 } = require('../ozon-draft.cjs');
 
 // ---------- runtime ----------
@@ -250,6 +251,10 @@ function registerIpc() {
   );
   ipcMain.handle('desktop:generateOzonDraft', async (_event, rows) =>
     generateOzonDraft({ ...loadOzonSettings(userDataDir(), { includeSecrets: true }), userDataPath: userDataDir() }, rows),
+  );
+
+  ipcMain.handle('desktop:generateOzonAttributeSuggestions', async (_event, params) =>
+    generateOzonAttributeSuggestions({ ...loadOzonSettings(userDataDir(), { includeSecrets: true }), userDataPath: userDataDir() }, params || {}),
   );
   ipcMain.handle('desktop:submitOzonDraft', async (_event, draft, confirmed) => {
     if (confirmed !== true) {

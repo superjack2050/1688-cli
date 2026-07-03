@@ -54,6 +54,7 @@ contextBridge.exposeInMainWorld('desktopApi', {
     getCategoryAttributes: (params) => ipcRenderer.invoke('desktop:getOzonCategoryAttributes', params),
     getCategoryAttributeValues: (params) => ipcRenderer.invoke('desktop:getOzonCategoryAttributeValues', params),
     generateDraft: (rows) => ipcRenderer.invoke('desktop:generateOzonDraft', rows),
+    generateAttributeSuggestions: (params) => ipcRenderer.invoke('desktop:generateOzonAttributeSuggestions', params),
     submitDraft: (draft, confirmed) => ipcRenderer.invoke('desktop:submitOzonDraft', draft, confirmed),
   },
 });

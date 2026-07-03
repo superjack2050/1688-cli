@@ -567,6 +567,41 @@ function FieldError({ show, text: value }: { show: boolean; text: string }) {
   return <small className="ozon-draft-error-text">{value}</small>;
 }
 
+function normalizeAttributeName(value: unknown): string {
+  return String(value || '').trim().toLowerCase().replace(/\s+/g, '');
+}
+
+function normalizeOptionText(value: unknown): string {
+  return String(value || '').trim().toLowerCase().replace(/\s+/g, '');
+}
+
+function isOriginCountryAttribute(attr: OzonCategoryAttribute): boolean {
+  const name = normalizeAttributeName(attr.name);
+  return name.includes('原产国')
+    || name.includes('制造国')
+    || name.includes('countryoforigin')
+    || name.includes('страна');
+}
+
+function rankDictionaryOptions(options: OzonAttributeValue[], query: string): OzonAttributeValue[] {
+  const needle = normalizeOptionText(query);
+  if (!needle) return [];
+  return options
+    .map((option) => {
+      const label = normalizeOptionText(option.value);
+      let score = 0;
+      if (label === needle) score += 100;
+      if (label.startsWith(needle)) score += 70;
+      if (label.includes(needle)) score += 50;
+      if (needle.includes(label)) score += 30;
+      if (['中国', 'china', 'китай'].includes(needle) && ['中国', 'china', 'китай'].some((item) => label.includes(item))) score += 120;
+      return { option, score };
+    })
+    .filter((item) => item.score > 0)
+    .sort((a, b) => b.score - a.score)
+    .map((item) => item.option);
+}
+
 function normalizeBrandText(value: unknown): string {
   return String(value || '').trim().toLowerCase().replace(/\s+/g, '');
 }
@@ -1071,6 +1106,122 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onTo
   );
   const brandIsDictionary = Boolean(brandAttribute?.dictionaryId);
 
+  const [attributeAiFilling, setAttributeAiFilling] = useState(false);
+  const [attributeAiFilledKey, setAttributeAiFilledKey] = useState('');
+  const attributeAutoFillKey = `${task.key}:${form.descriptionCategoryId}:${form.typeId}`;
+
+  const visibleFeatureAttrs = useMemo(
+    () => visibleCategoryAttributes(categoryAttributes, 'feature'),
+    [categoryAttributes],
+  );
+
+  async function resolveDictionaryValueForSuggestion(attr: OzonCategoryAttribute, query: string): Promise<{ label: string; id: number } | null> {
+    if (!text(query)) return null;
+    const descId = intForPayload(form.descriptionCategoryId);
+    const typeId = intForPayload(form.typeId);
+    if (!descId || !typeId) return null;
+
+    try {
+      const response = await getApi().ozon.getCategoryAttributeValues({
+        descriptionCategoryId: descId,
+        typeId,
+        attributeId: attr.id,
+        language: 'ZH_HANS',
+        limit: 20,
+        query,
+      });
+      const options = response.values || [];
+      const ranked = rankDictionaryOptions(options, query);
+      if (!ranked.length) return null;
+      return { label: text(ranked[0].value), id: ranked[0].id };
+    } catch {
+      return null;
+    }
+  }
+
+  async function applyDefaultOriginCountry(attrs: OzonCategoryAttribute[]) {
+    const originAttr = attrs.find(isOriginCountryAttribute);
+    if (!originAttr) return;
+    if (text(dynamicValues[String(originAttr.id)])) return;
+    if (!originAttr.dictionaryId) {
+      updateDynamicValue(originAttr.id, '中国');
+      return;
+    }
+    const selected = await resolveDictionaryValueForSuggestion(originAttr, '中国');
+    if (!selected) return;
+    updateDynamicValue(originAttr.id, selected.label);
+    updateDictionaryValueIds(originAttr.id, { [selected.label]: selected.id });
+  }
+
+  async function applyAttributeSuggestions(
+    suggestions: Array<{ attribute_id: number; value_text: string; dictionary_query?: string }>,
+    attrs: OzonCategoryAttribute[],
+  ) {
+    const attrMap = new Map(attrs.map((attr) => [Number(attr.id), attr]));
+    for (const suggestion of suggestions) {
+      const attr = attrMap.get(Number(suggestion.attribute_id));
+      if (!attr) continue;
+      const attrKey = String(attr.id);
+      if (text(dynamicValues[attrKey])) continue;
+
+      const suggestedText = text(suggestion.value_text);
+      const dictionaryQuery = text(suggestion.dictionary_query || suggestion.value_text);
+      if (!suggestedText && !dictionaryQuery) continue;
+
+      if (attr.dictionaryId) {
+        const selected = await resolveDictionaryValueForSuggestion(attr, dictionaryQuery || suggestedText);
+        if (!selected) continue;
+        updateDynamicValue(attr.id, selected.label);
+        updateDictionaryValueIds(attr.id, { [selected.label]: selected.id });
+        continue;
+      }
+      updateDynamicValue(attr.id, suggestedText);
+    }
+  }
+
+  async function fillCategoryAttributesByAi() {
+    if (attributeAiFilling) return;
+    const attrs = visibleFeatureAttrs;
+    if (!attrs.length) return;
+
+    setAttributeAiFilling(true);
+    setMessage('AI 正在根据商品数据填写类目特征...');
+
+    try {
+      await applyDefaultOriginCountry(attrs);
+
+      const response = await getApi().ozon.generateAttributeSuggestions({
+        sourceRows: task.draft?.sourceRows || [],
+        categoryAttributes: attrs,
+        form: { name: form.name, brand: form.brand, model: form.model, description: form.description, tags: form.tags, categoryPath: form.categoryPath },
+        category: { descriptionCategoryId: intForPayload(form.descriptionCategoryId), typeId: intForPayload(form.typeId), path: form.categoryPath },
+      });
+
+      await applyAttributeSuggestions(response.attributes || [], attrs);
+      setAttributeAiFilledKey(attributeAutoFillKey);
+      setMessage('AI 已尝试填写类目特征，请检查字典项是否正确。');
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : String(error));
+    } finally {
+      setAttributeAiFilling(false);
+    }
+  }
+
+  // Auto-trigger AI attribute fill once per category
+  useEffect(() => {
+    if (!visibleFeatureAttrs.length) return;
+    if (!form.descriptionCategoryId || !form.typeId) return;
+    if (attributeAiFilledKey === attributeAutoFillKey) return;
+
+    const requiredMissing = visibleFeatureAttrs.filter(
+      (attr) => attr.isRequired && !text(dynamicValues[String(attr.id)]),
+    );
+    if (!requiredMissing.length) return;
+
+    void fillCategoryAttributesByAi();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visibleFeatureAttrs, form.descriptionCategoryId, form.typeId]);
+
   useEffect(() => {
     const nextForm = createDraftForm(task);
     setForm(nextForm);
@@ -1568,6 +1719,9 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onTo
               <div className="ozon-draft-dynamic-head">
                 <strong>类目特征</strong>
                 <span>{featureAttributes.length ? `${featureAttributes.length} 项` : '未返回额外特征，可用自定义属性补充'}</span>
+                <button type="button" className="glass-btn-secondary" onClick={fillCategoryAttributesByAi} disabled={attributeAiFilling} style={{ height: 30, fontSize: 11, padding: '0 10px' }}>
+                  {attributeAiFilling ? 'AI 填写中...' : 'AI 填充特征'}
+                </button>
               </div>
               {featureAttributes.map((attr) => (
                 <label key={attr.id} className="ozon-draft-field wide">

@@ -921,4 +921,80 @@ function categoryTreeRoots(tree) {
 }
 
 
-module.exports = { generateOzonDraft, submitOzonDraft, collectDraftMissing };
+// ── AI Attribute Suggestions ──
+
+async function generateOzonAttributeSuggestions(settings, params = {}) {
+  const sourceRows = Array.isArray(params.sourceRows) ? params.sourceRows : [];
+  const categoryAttributes = Array.isArray(params.categoryAttributes) ? params.categoryAttributes : [];
+  const currentForm = params.form && typeof params.form === 'object' ? params.form : {};
+  const category = params.category && typeof params.category === 'object' ? params.category : {};
+
+  if (!settings.ai.apiKey) throw new Error('DeepSeek API Key 未配置。');
+  if (!sourceRows.length) throw new Error('缺少 1688 商品数据，无法生成类目特征建议。');
+  if (!categoryAttributes.length) throw new Error('缺少 Ozon 类目特征列表。');
+
+  const messages = buildAttributeSuggestionMessages(sourceRows, categoryAttributes, currentForm, category);
+  const generated = await callAi(settings.ai, messages);
+  return normalizeAttributeSuggestions(generated, categoryAttributes);
+}
+
+function buildAttributeSuggestionMessages(sourceRows, categoryAttributes, currentForm, category) {
+  const payload = {
+    task: 'suggest_ozon_category_attribute_values_from_1688_product',
+    category,
+    current_form: currentForm,
+    source_rows: sourceRows.slice(0, 5),
+    attributes: categoryAttributes.map((attr) => ({
+      id: attr.id,
+      name: attr.name,
+      description: attr.description || '',
+      is_required: attr.isRequired,
+      is_dictionary: Boolean(attr.dictionaryId),
+      dictionary_id: attr.dictionaryId || 0,
+      is_aspect: Boolean(attr.isAspect),
+      max_value_count: attr.maxValueCount || 1,
+    })),
+    required_schema: {
+      attributes: [{
+        attribute_id: 'number',
+        value_text: 'string, suggested visible value, empty if unknown',
+        dictionary_query: 'string, for dictionary search, empty if not dictionary',
+        confidence: 'number 0-1',
+        reason: 'short Chinese reason',
+      }],
+    },
+    rules: [
+      'Return JSON only. No Markdown.',
+      'Use only evidence from source_rows and category attribute names.',
+      'Do not invent dictionary_value_id.',
+      'For dictionary attributes, return value_text and dictionary_query only.',
+      'If attribute is 原产国 / country of origin / страна-изготовитель, use 中国 as value_text and 中国 as dictionary_query.',
+      'If evidence is insufficient, return empty value_text.',
+    ],
+  };
+
+  return [
+    { role: 'system', content: 'You are an Ozon product attribute assistant. Suggest category attribute values from 1688 product data. Return compliant JSON only.' },
+    { role: 'user', content: JSON.stringify(payload) },
+  ];
+}
+
+function normalizeAttributeSuggestions(data, categoryAttributes) {
+  const attrIds = new Set(categoryAttributes.map((attr) => Number(attr.id)).filter(Boolean));
+  const raw = Array.isArray(data?.attributes) ? data.attributes : [];
+  return {
+    ok: true,
+    attributes: raw
+      .map((item) => ({
+        attribute_id: Number(item.attribute_id || item.id || 0),
+        value_text: cleanText(item.value_text || item.value || ''),
+        dictionary_query: cleanText(item.dictionary_query || item.query || item.value_text || ''),
+        confidence: Number(item.confidence || 0),
+        reason: cleanText(item.reason || ''),
+      }))
+      .filter((item) => attrIds.has(item.attribute_id))
+      .slice(0, 80),
+  };
+}
+
+module.exports = { generateOzonDraft, submitOzonDraft, collectDraftMissing, generateOzonAttributeSuggestions };
