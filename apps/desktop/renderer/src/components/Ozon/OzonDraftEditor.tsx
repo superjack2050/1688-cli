@@ -812,8 +812,6 @@ function DictionaryAttributeField({
       const rawOptions = response.values || [];
       setOptions(rawOptions);
       setMessage(response.hasNext ? '字典值较多，已显示前 2000 个。' : '');
-      // Trigger async translation for Cyrillic values
-      if (onLoadOptions) onLoadOptions(attr, rawOptions.slice(0, 100));
     } catch (error) {
       setOptions([]);
       setMessage(error instanceof Error ? error.message : String(error));
@@ -1192,18 +1190,32 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onTo
     if (!descId || !typeId) return null;
 
     try {
-      const response = await getApi().ozon.getCategoryAttributeValues({
+      // Step 1: search by keyword to find the matching dictionary_value_id.
+      // The search endpoint does NOT support language: ZH_HANS, so results may be Russian.
+      const searchResp = await getApi().ozon.getCategoryAttributeValues({
+        descriptionCategoryId: descId,
+        typeId,
+        attributeId: attr.id,
+        limit: 20,
+        query,
+      });
+      const searchOptions = searchResp.values || [];
+      const ranked = rankDictionaryOptions(searchOptions, query);
+      if (!ranked.length) return null;
+      const matchedId = ranked[0].id;
+
+      // Step 2: look up the Chinese display value by ID using the list endpoint with ZH_HANS.
+      const zhResp = await getApi().ozon.getCategoryAttributeValues({
         descriptionCategoryId: descId,
         typeId,
         attributeId: attr.id,
         language: 'ZH_HANS',
-        limit: 20,
-        query,
+        limit: 2000,
       });
-      const options = response.values || [];
-      const ranked = rankDictionaryOptions(options, query);
-      if (!ranked.length) return null;
-      return { label: text(ranked[0].value), id: ranked[0].id };
+      const zhOptions = zhResp.values || [];
+      const zhMatch = zhOptions.find((item) => item.id === matchedId);
+      const label = zhMatch ? text(zhMatch.value) : text(ranked[0].value);
+      return { label, id: matchedId };
     } catch {
       return null;
     }
