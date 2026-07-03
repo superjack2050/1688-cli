@@ -8,8 +8,8 @@ export type OzonProductStatusGroup = 'draft' | 'success' | 'processing' | 'manua
 type Props = {
   task: OzonListingTask;
   onInspect: (task: OzonListingTask) => void;
-  onCopyDraft: (task: OzonListingTask) => void;
-  onBackTo1688: () => void;
+  onCopyDraft?: (task: OzonListingTask) => void;
+  onBackTo1688?: () => void;
 };
 
 export function isOzonTaskProcessingStatus(status: OzonListingTaskStatus): boolean {
@@ -107,14 +107,12 @@ function missingSummaryOf(task: OzonListingTask): string {
   return '';
 }
 
-export default function OzonProductCard({ task, onInspect, onCopyDraft, onBackTo1688 }: Props) {
+export default function OzonProductCard({ task, onInspect }: Props) {
   const [imageFailed, setImageFailed] = useState(false);
   const statusGroup = statusGroupOf(task.status);
   const missingSummary = missingSummaryOf(task);
   const message = formatOzonTaskDisplayMessage(task);
   const sourceUrl = task.sourceUrl || text(firstRow(task).detail_url);
-  const hasDraft = Boolean(task.draft);
-  const showManualAction = task.status === 'needs_manual';
   const title = task.title || text(firstRow(task).product_title) || text(firstItem(task).name) || task.offerId || '未命名商品';
 
   useEffect(() => {
@@ -176,13 +174,7 @@ export default function OzonProductCard({ task, onInspect, onCopyDraft, onBackTo
 
         <div className="ozon-product-actions">
           <button type="button" onClick={() => onInspect(task)}>
-            {showManualAction ? '去补充' : '编辑草稿'}
-          </button>
-          <button type="button" disabled={!hasDraft} onClick={() => onCopyDraft(task)}>
-            复制 Payload
-          </button>
-          <button type="button" onClick={onBackTo1688}>
-            返回 1688
+            查看草稿
           </button>
         </div>
       </div>
