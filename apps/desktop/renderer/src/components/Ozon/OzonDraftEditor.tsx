@@ -575,6 +575,37 @@ function normalizeOptionText(value: unknown): string {
   return String(value || '').trim().toLowerCase().replace(/\s+/g, '');
 }
 
+function containsCyrillic(value: unknown): boolean {
+  return /[Ѐ-ӿ]/.test(String(value || ''));
+}
+
+function normalizeDictionaryDisplayText(value: unknown): string {
+  const raw = text(value);
+  if (!raw) return '';
+
+  const normalized = raw.trim().toLowerCase();
+  const map: Record<string, string> = {
+    'термопластичный эластомер (tpe)': '热塑性弹性体（TPE）',
+    'термопластичный эластомер': '热塑性弹性体',
+    'силикон': '硅胶',
+    'пластик': '塑料',
+    'резина': '橡胶',
+    'металл': '金属',
+    'полиуретан': '聚氨酯',
+    'ручной': '手动',
+    'автоматический': '自动',
+    'китай': '中国',
+    'для мужчин': '男士',
+    'для женщин': '女士',
+    'унисекс': '男女通用',
+    'для взрослых': '成人用品',
+  };
+  if (map[normalized]) return map[normalized];
+  if (/^[a-z0-9\s()+/\-]+$/i.test(raw)) return raw;
+  if (containsCyrillic(raw)) return '';
+  return raw;
+}
+
 function isOriginCountryAttribute(attr: OzonCategoryAttribute): boolean {
   const name = normalizeAttributeName(attr.name);
   return name.includes('原产国')
@@ -793,11 +824,12 @@ function DictionaryAttributeField({
   }
 
   function selectOption(option: OzonAttributeValue) {
-    const label = text(option.value);
-    if (!label) return;
+    const payloadLabel = text(option.value);
+    if (!payloadLabel) return;
+    const label = normalizeDictionaryDisplayText(payloadLabel) || payloadLabel;
 
     if (!multi) {
-      onChange(label, { [label]: option.id });
+      onChange(label, { [label]: option.id, [payloadLabel]: option.id });
       setOpen(false);
       setQuery('');
       return;
@@ -817,6 +849,8 @@ function DictionaryAttributeField({
       const id = item === label ? option.id : valueIds[item];
       if (id) nextIds[item] = id;
     }
+    // Keep payload-label-to-ID mapping
+    if (option.id) nextIds[payloadLabel] = option.id;
     onChange(nextSelected.join('\n'), nextIds);
   }
 
@@ -847,7 +881,8 @@ function DictionaryAttributeField({
               <div className="ozon-dictionary-state">正在加载 Ozon 字典值...</div>
             ) : filteredOptions.length ? (
               filteredOptions.map((option) => {
-                const label = text(option.value);
+                const payloadLabel = text(option.value);
+                const label = normalizeDictionaryDisplayText(payloadLabel) || payloadLabel;
                 const selectedOption = selectedSet.has(label);
                 return (
                   <button
@@ -1115,7 +1150,7 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onTo
     [categoryAttributes],
   );
 
-  async function resolveDictionaryValueForSuggestion(attr: OzonCategoryAttribute, query: string): Promise<{ label: string; id: number } | null> {
+  async function resolveDictionaryValueForSuggestion(attr: OzonCategoryAttribute, query: string): Promise<{ label: string; payloadLabel: string; id: number } | null> {
     if (!text(query)) return null;
     const descId = intForPayload(form.descriptionCategoryId);
     const typeId = intForPayload(form.typeId);
@@ -1133,7 +1168,9 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onTo
       const options = response.values || [];
       const ranked = rankDictionaryOptions(options, query);
       if (!ranked.length) return null;
-      return { label: text(ranked[0].value), id: ranked[0].id };
+      const payloadLabel = text(ranked[0].value);
+      const displayLabel = normalizeDictionaryDisplayText(payloadLabel) || payloadLabel;
+      return { label: displayLabel, payloadLabel, id: ranked[0].id };
     } catch {
       return null;
     }
@@ -1150,7 +1187,7 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onTo
     const selected = await resolveDictionaryValueForSuggestion(originAttr, '中国');
     if (!selected) return;
     updateDynamicValue(originAttr.id, selected.label);
-    updateDictionaryValueIds(originAttr.id, { [selected.label]: selected.id });
+    updateDictionaryValueIds(originAttr.id, { [selected.label]: selected.id, [selected.payloadLabel]: selected.id });
   }
 
   async function applyAttributeSuggestions(
@@ -1172,7 +1209,7 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onTo
         const selected = await resolveDictionaryValueForSuggestion(attr, dictionaryQuery || suggestedText);
         if (!selected) continue;
         updateDynamicValue(attr.id, selected.label);
-        updateDictionaryValueIds(attr.id, { [selected.label]: selected.id });
+        updateDictionaryValueIds(attr.id, { [selected.label]: selected.id, [selected.payloadLabel]: selected.id });
         continue;
       }
       updateDynamicValue(attr.id, suggestedText);
