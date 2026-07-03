@@ -46,7 +46,7 @@ program
   .command('search')
   .description('Search 1688 by keyword')
   .argument('<keyword>', 'Keyword to search (use quotes for multi-word)')
-  .option('--max <n>', 'Maximum number of results', '20')
+  .option('--max <n>', 'Maximum number of results', '10')
   .option('--sort <sort>', 'Sort: relevance | best-selling | price-asc | price-desc', 'relevance')
   .option('--price-min <n>', 'Minimum unit price')
   .option('--price-max <n>', 'Maximum unit price')

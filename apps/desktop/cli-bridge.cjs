@@ -32,7 +32,7 @@ const COMMANDS = {
     argv: ['search'],
     positional: [{ name: 'keyword', label: '搜索词', required: true }],
     options: [
-      numberOption('max', '--max', '采集数量', 20),
+      numberOption('max', '--max', '采集数量', 10),
       selectOption('sort', '--sort', '1688排序方式', 'relevance', SORT_OPTIONS),
       numberOption('priceMin', '--price-min', '最低价'),
       numberOption('priceMax', '--price-max', '最高价'),
