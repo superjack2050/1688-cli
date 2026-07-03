@@ -13,10 +13,15 @@ async function generateOzonDraft(settings, rows = []) {
   if (!sourceRows.length) throw new Error('没有可生成 Ozon 草稿的 1688 SKU 数据。');
   if (!settings.ai.apiKey) throw new Error('DeepSeek API Key 未配置。');
 
-  const candidates = defaultCategoryCandidates(settings);
-  const generated = await callAi(settings.ai, buildMessages(sourceRows, candidates));
-  const normalized = normalizeGenerated(generated, candidates);
-  applyChineseCategoryPath(normalized, settings);
+  const categoryContext = resolveCategoryForDraft(settings, sourceRows);
+
+  const generated = await callAi(settings.ai, buildMessages(sourceRows, categoryContext.candidates));
+  const normalized = normalizeGenerated(generated, categoryContext.candidates);
+
+  if (categoryContext.exactCategory) {
+    normalized.matched_category = categoryContext.exactCategory;
+  }
+
   const items = sourceRows.map((row, index) => buildOzonItem(row, normalized, settings, index));
   const missing = collectDraftMissing(items, { sourceRows, generated: normalized });
 
@@ -307,17 +312,137 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function defaultCategoryCandidates(settings) {
-  const desc = toInt(settings.ozon.defaultDescriptionCategoryId);
-  const type = toInt(settings.ozon.defaultTypeId);
-  if (!desc || !type) return [];
-  return [{
-    candidate_index: 0,
-    description_category_id: desc,
-    type_id: type,
-    path: settings.ozon.defaultCategoryPath || '默认 Ozon 类目',
-  }];
+// ── Category resolution (keyword → Chinese tree) ──
+
+function resolveCategoryForDraft(settings, sourceRows) {
+  const keyword = extractSearchKeyword(sourceRows);
+  const categoryIndex = loadChineseCategoryIndex(settings);
+
+  const exactCategory = findExactCategoryByKeyword(categoryIndex, keyword);
+  if (exactCategory) {
+    return { keyword, exactCategory, candidates: [] };
+  }
+
+  const candidates = buildCategoryCandidatesByKeyword(categoryIndex, keyword, sourceRows);
+  return { keyword, exactCategory: null, candidates };
 }
+
+function extractSearchKeyword(sourceRows) {
+  const rows = Array.isArray(sourceRows) ? sourceRows : [];
+  const keys = ['search_keyword', 'searchKeyword', 'keyword', 'query', 'search_query', 'searchQuery', 'task_keyword', 'taskKeyword', '_keyword'];
+  for (const row of rows) {
+    if (!row || typeof row !== 'object') continue;
+    for (const key of keys) {
+      const value = cleanText(row[key]);
+      if (value) return value;
+    }
+  }
+  const first = rows[0] || {};
+  return cleanText(first.search_word || first.product_title || first.title || first.sku_name);
+}
+
+function loadChineseCategoryIndex(settings) {
+  const userDataPath = cleanText(settings?.userDataPath || settings?.paths?.userDataPath || settings?.appDataPath);
+  const files = [];
+  if (userDataPath) files.push(path.join(userDataPath, 'ozon_category_tree.zh_hans.json'));
+  if (process.env.APPDATA) files.push(path.join(process.env.APPDATA, '1688 to Ozon Studio', 'ozon_category_tree.zh_hans.json'));
+  for (const file of files) {
+    const tree = readJsonFileSafe(file);
+    if (!tree) continue;
+    const entries = flattenChineseCategoryTree(tree);
+    if (entries.length) return entries;
+  }
+  return [];
+}
+
+function flattenChineseCategoryTree(tree) {
+  const roots = categoryTreeRoots(tree);
+  const result = [];
+  for (const root of roots) {
+    walkCategoryIndex(root, [], 0, result);
+  }
+  return result;
+}
+
+function walkCategoryIndex(node, parents, inheritedDescriptionCategoryId, result) {
+  if (!node || typeof node !== 'object' || node.disabled === true) return;
+  const label = cleanText(node.category_name || node.type_name);
+  const descriptionCategoryId = toInt(node.description_category_id) || inheritedDescriptionCategoryId || 0;
+  const typeId = toInt(node.type_id) || 0;
+  const pathParts = label ? [...parents, label] : parents;
+  const depth = pathParts.length;
+  const pathText = pathParts.join(' / ');
+  if (depth === 3 && descriptionCategoryId && typeId && label && !containsCyrillic(pathText)) {
+    result.push({
+      candidate_index: result.length,
+      keyword: label,
+      path: pathText,
+      description_category_id: descriptionCategoryId,
+      type_id: typeId,
+      searchText: normalizeCategoryText(`${label} ${pathText} ${descriptionCategoryId} ${typeId}`),
+    });
+  }
+  const children = Array.isArray(node.children) ? node.children : [];
+  for (const child of children) {
+    walkCategoryIndex(child, pathParts, descriptionCategoryId, result);
+  }
+}
+
+function normalizeCategoryText(value) {
+  return String(value || '').trim().toLowerCase().replace(/[｜|／/\\>\-—–_]+/g, ' ').replace(/\s+/g, '');
+}
+
+function findExactCategoryByKeyword(categoryIndex, keyword) {
+  const normalizedKeyword = normalizeCategoryText(keyword);
+  if (!normalizedKeyword) return null;
+  const exact = categoryIndex.filter((entry) => normalizeCategoryText(entry.keyword) === normalizedKeyword);
+  if (exact.length === 1) return categoryForDraft(exact[0], 'keyword_exact');
+  return null;
+}
+
+function categoryForDraft(entry, matchSource) {
+  return {
+    candidate_index: entry.candidate_index,
+    description_category_id: entry.description_category_id,
+    type_id: entry.type_id,
+    path: entry.path,
+    path_language: 'ZH_HANS',
+    match_source: matchSource || 'ai_candidate',
+  };
+}
+
+function buildCategoryCandidatesByKeyword(categoryIndex, keyword, sourceRows) {
+  const normalizedKeyword = normalizeCategoryText(keyword);
+  const titleText = normalizeCategoryText(
+    (Array.isArray(sourceRows) ? sourceRows : []).slice(0, 3)
+      .map((row) => `${row.product_title || ''} ${row.title || ''} ${row.sku_name || ''}`)
+      .join(' ')
+  );
+  const scored = [];
+  for (const entry of categoryIndex) {
+    let score = 0;
+    const entryName = normalizeCategoryText(entry.keyword);
+    const entrySearch = entry.searchText;
+    if (normalizedKeyword && entryName.includes(normalizedKeyword)) score += 100;
+    if (normalizedKeyword && normalizedKeyword.includes(entryName)) score += 70;
+    if (normalizedKeyword && entrySearch.includes(normalizedKeyword)) score += 50;
+    for (const ch of new Set(normalizedKeyword.split(''))) {
+      if (ch && entrySearch.includes(ch)) score += 1;
+    }
+    if (titleText && entrySearch.includes(titleText)) score += 10;
+    if (score > 0) scored.push({ score, entry });
+  }
+  scored.sort((a, b) => b.score - a.score);
+  return scored.slice(0, 50).map((item, index) => ({
+    candidate_index: index,
+    description_category_id: item.entry.description_category_id,
+    type_id: item.entry.type_id,
+    path: item.entry.path,
+    keyword: item.entry.keyword,
+  }));
+}
+
+// ── AI messages ──
 
 function buildMessages(rows, candidates) {
   const payload = {
@@ -328,10 +453,7 @@ function buildMessages(rows, candidates) {
       description_ru: 'string, Russian, 4 paragraphs',
       tags: ['20 Russian search phrases'],
       matched_category: {
-        candidate_index: 'integer if candidates are provided',
-        description_category_id: 'integer',
-        type_id: 'integer',
-        path: 'string',
+        candidate_index: 'integer or null, must be one of category_candidates[].candidate_index',
       },
       estimated_dimensions: {
         length_cm: 'number',
@@ -340,24 +462,30 @@ function buildMessages(rows, candidates) {
         weight_g: 'number',
       },
     },
-    rules: [
+    rules: candidates.length ? [
       'Return JSON only. No Markdown.',
       'Write natural Russian Ozon listing content from the provided 1688 facts.',
       'Do not keep Chinese text in title_ru, description_ru, or tags.',
       'Do not invent brand, certification, warranty, or exact materials if not present.',
       'If source dimensions are missing, estimate reasonable packed dimensions.',
-      'If category candidates are provided, choose one of them.',
-      'For matched_category.path, copy exactly from the chosen candidate. Do not translate or invent a Russian category path.',
-      'The UI category path will be resolved from the local Chinese Ozon category tree by description_category_id and type_id.',
+      'Category selection rule: choose exactly one category_candidates item by candidate_index.',
+      'Do not invent description_category_id, type_id, or category path.',
+      'Only title_ru, model_name, description_ru, tags, and estimated_dimensions should be generated freely.',
+    ] : [
+      'Return JSON only. No Markdown.',
+      'Write natural Russian Ozon listing content from the provided 1688 facts.',
+      'Do not keep Chinese text in title_ru, description_ru, or tags.',
+      'Do not invent brand, certification, warranty, or exact materials if not present.',
+      'If source dimensions are missing, estimate reasonable packed dimensions.',
+      'Return matched_category.candidate_index as null.',
+      'Do not invent description_category_id, type_id, or category path.',
+      'Only title_ru, model_name, description_ru, tags, and estimated_dimensions should be generated freely.',
     ],
     source_rows: rows.slice(0, 8),
     category_candidates: candidates,
   };
   return [
-    {
-      role: 'system',
-      content: 'You are a Russian Ozon marketplace product card editor. Generate compliant JSON only.',
-    },
+    { role: 'system', content: 'You are a Russian Ozon marketplace product card editor. Generate compliant JSON only.' },
     { role: 'user', content: JSON.stringify(payload) },
   ];
 }
@@ -411,11 +539,15 @@ function normalizeGenerated(data, candidates) {
     model_name: String(data?.model_name || '').trim().slice(0, 200),
     description_ru: String(data?.description_ru || '').trim().slice(0, 4000),
     tags: tags.slice(0, 20),
-    matched_category: {
-      description_category_id: toInt(matched.description_category_id) || candidate?.description_category_id || 0,
-      type_id: toInt(matched.type_id) || candidate?.type_id || 0,
-      path: String(candidate?.path || matched.path || '').trim(),
-    },
+    matched_category: candidate
+      ? categoryForDraft(candidate, 'ai_candidate')
+      : {
+          description_category_id: 0,
+          type_id: 0,
+          path: '',
+          path_language: 'UNKNOWN',
+          match_source: 'none',
+        },
     estimated_dimensions: {
       length_cm: positiveNumber(data?.estimated_dimensions?.length_cm),
       width_cm: positiveNumber(data?.estimated_dimensions?.width_cm),
@@ -444,8 +576,8 @@ function buildOzonItem(row, generated, settings, index) {
     old_price: '0',
     vat: '0',
     currency_code: settings.ozon.currencyCode || 'CNY',
-    description_category_id: Number(category.description_category_id || settings.ozon.defaultDescriptionCategoryId || 0),
-    type_id: Number(category.type_id || settings.ozon.defaultTypeId || 0),
+    description_category_id: Number(category.description_category_id || 0),
+    type_id: Number(category.type_id || 0),
     barcode: '',
     images,
     primary_image: images[0] || '',
@@ -458,7 +590,7 @@ function buildOzonItem(row, generated, settings, index) {
     attributes: attrs,
     complex_attributes: [],
     _source: 'desktop_ai_draft',
-    _category_path: cleanText(category.path) || cleanText(settings.ozon.defaultCategoryPath),
+    _category_path: cleanText(category.path),
   };
 }
 
@@ -554,60 +686,6 @@ function containsCyrillic(value) {
   return /[Ѐ-ӿ]/.test(String(value || ''));
 }
 
-function applyChineseCategoryPath(generated, settings) {
-  const category = generated?.matched_category;
-  if (!category || typeof category !== 'object') return generated;
-
-  const descId = toInt(category.description_category_id);
-  const typeId = toInt(category.type_id);
-
-  const chinesePath = findChineseCategoryPath(settings, descId, typeId);
-
-  if (chinesePath) {
-    category.path = chinesePath;
-    category.path_language = 'ZH_HANS';
-    return generated;
-  }
-
-  const defaultPath = cleanText(settings?.ozon?.defaultCategoryPath);
-  if (defaultPath && !containsCyrillic(defaultPath)) {
-    category.path = defaultPath;
-    category.path_language = 'ZH_HANS';
-    return generated;
-  }
-
-  // Fallback: keep original path but mark language
-  category.path_language = containsCyrillic(category.path) ? 'RU_OR_AI' : 'UNKNOWN';
-  return generated;
-}
-
-function findChineseCategoryPath(settings, descriptionCategoryId, typeId) {
-  const descId = toInt(descriptionCategoryId);
-  const tId = toInt(typeId);
-  if (!descId || !tId) return '';
-
-  const userDataPath = cleanText(settings?.userDataPath || settings?.paths?.userDataPath || settings?.appDataPath);
-  const candidates = [];
-
-  if (userDataPath) {
-    candidates.push(path.join(userDataPath, 'ozon_category_tree.zh_hans.json'));
-  }
-
-  if (process.env.APPDATA) {
-    candidates.push(path.join(process.env.APPDATA, '1688 to Ozon Studio', 'ozon_category_tree.zh_hans.json'));
-  }
-
-  for (const file of candidates) {
-    const tree = readJsonFileSafe(file);
-    if (!tree) continue;
-
-    const found = walkCategoryTree(tree, descId, tId);
-    if (found) return found;
-  }
-
-  return '';
-}
-
 function readJsonFileSafe(file) {
   if (!file || !fs.existsSync(file)) return null;
   try {
@@ -616,15 +694,6 @@ function readJsonFileSafe(file) {
   } catch {
     return null;
   }
-}
-
-function walkCategoryTree(tree, descriptionCategoryId, typeId) {
-  const roots = categoryTreeRoots(tree);
-  for (const root of roots) {
-    const found = walkNode(root, [], 0, descriptionCategoryId, typeId);
-    if (found) return found;
-  }
-  return '';
 }
 
 function categoryTreeRoots(tree) {
@@ -636,26 +705,5 @@ function categoryTreeRoots(tree) {
   return [];
 }
 
-function walkNode(node, parents, inheritedDescriptionCategoryId, targetDescriptionCategoryId, targetTypeId) {
-  if (!node || typeof node !== 'object') return '';
-
-  const label = cleanText(node.category_name || node.type_name);
-  const descriptionCategoryId = toInt(node.description_category_id) || inheritedDescriptionCategoryId || 0;
-  const typeId = toInt(node.type_id) || 0;
-  const pathParts = label ? [...parents, label] : parents;
-
-  if (descriptionCategoryId === targetDescriptionCategoryId && typeId === targetTypeId) {
-    const joined = pathParts.join(' / ');
-    return joined && !containsCyrillic(joined) ? joined : '';
-  }
-
-  const children = Array.isArray(node.children) ? node.children : [];
-  for (const child of children) {
-    const found = walkNode(child, pathParts, descriptionCategoryId, targetDescriptionCategoryId, targetTypeId);
-    if (found) return found;
-  }
-
-  return '';
-}
 
 module.exports = { generateOzonDraft, submitOzonDraft, collectDraftMissing };
