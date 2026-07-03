@@ -1276,6 +1276,15 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onTo
       typeof task.draft.generated === 'object' &&
       (task.draft.generated as Record<string, unknown>).attribute_values;
     const values = Array.isArray(prefillValues) ? prefillValues : [];
+    console.log('[ozon-editor] prefill check:', {
+      hasDraft: !!task.draft,
+      hasGenerated: !!(task.draft && typeof task.draft.generated === 'object'),
+      generatedKeys: task.draft && typeof task.draft.generated === 'object'
+        ? Object.keys(task.draft.generated as Record<string, unknown>)
+        : [],
+      prefillType: typeof prefillValues,
+      valuesLen: values.length,
+    });
 
     if (values.length && !forceFresh) {
       setMessage('草稿已附带特征值，正在应用...');
