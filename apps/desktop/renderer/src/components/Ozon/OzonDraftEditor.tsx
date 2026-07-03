@@ -1261,16 +1261,37 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onTo
     }
   }
 
-  async function fillCategoryAttributesByAi() {
+  async function fillCategoryAttributesByAi(forceFresh = false) {
     if (attributeAiFilling) return;
     const attrs = visibleFeatureAttrs;
     if (!attrs.length) return;
 
-    // Mark filling key immediately so we don't re-trigger across renders
     setAttributeAiFilledKey(attributeAutoFillKey);
     setAttributeAiFilling(true);
-    setMessage('AI 正在根据商品数据填写类目特征...');
 
+    // Pre-filled by the draft generation pipeline — apply immediately
+    const prefill = task.draft?.generated &&
+      typeof task.draft.generated === 'object' &&
+      (task.draft.generated as Record<string, unknown>).attribute_suggestions;
+    const prefillAttrs = prefill && typeof prefill === 'object'
+      ? (prefill as { attributes?: Array<{ attribute_id: number; value_text: string; dictionary_query?: string }> }).attributes
+      : undefined;
+
+    if (prefillAttrs && prefillAttrs.length && !forceFresh) {
+      setMessage('草稿已附带 AI 特征建议，正在匹配字典值...');
+      try {
+        await applyDefaultOriginCountry(attrs);
+        await applyAttributeSuggestions(prefillAttrs, attrs);
+        setMessage('AI 已尝试填写类目特征，请检查字典项是否正确。');
+      } catch (error) {
+        setMessage(error instanceof Error ? error.message : String(error));
+      } finally {
+        setAttributeAiFilling(false);
+      }
+      return;
+    }
+
+    setMessage('AI 正在根据商品数据填写类目特征...');
     try {
       await applyDefaultOriginCountry(attrs);
 
@@ -1291,8 +1312,6 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onTo
   }
 
   // Auto-trigger AI attribute fill immediately when category attributes are ready.
-  // Attributes must be filled as part of draft completion — not deferred until the
-  // user clicks the "特征" tab inside the editor.
   useEffect(() => {
     if (!visibleFeatureAttrs.length) return;
     if (!form.descriptionCategoryId || !form.typeId) return;
@@ -1799,7 +1818,7 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onTo
               <div className="ozon-draft-dynamic-head">
                 <strong>类目特征</strong>
                 <span>{featureAttributes.length ? `${featureAttributes.length} 项` : '未返回额外特征，可用自定义属性补充'}</span>
-                <button type="button" className="glass-btn-secondary" onClick={fillCategoryAttributesByAi} disabled={attributeAiFilling} style={{ height: 30, fontSize: 11, padding: '0 10px' }}>
+                <button type="button" className="glass-btn-secondary" onClick={() => fillCategoryAttributesByAi(true)} disabled={attributeAiFilling} style={{ height: 30, fontSize: 11, padding: '0 10px' }}>
                   {attributeAiFilling ? 'AI 填写中...' : 'AI 填充特征'}
                 </button>
               </div>

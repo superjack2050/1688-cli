@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react';
-import type { getApi } from '../../../services/api';
+import type { getApi, OzonDraft } from '../../../services/api';
 import { progressCardToOzonRows } from '../../../services/ozon-source-adapter';
 import { normalizeOzonTaskError } from '../../Ozon/ozonError';
 import type { ProgressOfferCardItem } from '../ProgressOfferCard';
@@ -337,6 +337,40 @@ export function useOzonListingQueue({
     return null;
   }
 
+  async function fillDraftAttributes(draft: OzonDraft, rows: Array<Record<string, unknown>>): Promise<void> {
+    try {
+      const generated = (draft.generated || {}) as Record<string, unknown>;
+      const category = (generated.matched_category || {}) as Record<string, unknown>;
+      const descId = Number(category.description_category_id || 0);
+      const typeId = Number(category.type_id || 0);
+      if (!descId || !typeId) return;
+
+      const catAttrs = await api.ozon.getCategoryAttributes({
+        descriptionCategoryId: descId,
+        typeId,
+        language: 'ZH_HANS',
+      });
+      const attrs = (catAttrs.attributes || []).filter((a) => !a.isAspect);
+
+      if (!attrs.length) return;
+
+      const suggestions = await api.ozon.generateAttributeSuggestions({
+        sourceRows: rows,
+        categoryAttributes: attrs,
+        form: {},
+        category: { descriptionCategoryId: descId, typeId, path: String(category.path || '') },
+      });
+
+      generated.attribute_suggestions = suggestions;
+      ozonListingLog('fillDraftAttributes done', {
+        draftId: draft.draftId,
+        suggestionCount: suggestions.attributes?.length || 0,
+      });
+    } catch (err) {
+      ozonListingLog('fillDraftAttributes failed', { error: errorMessageOf(err) });
+    }
+  }
+
   async function generateDraftForEntry(entry: OzonListingQueueEntry): Promise<void> {
     const deepItem = await ensureDeepCollected(entry);
 
@@ -368,6 +402,10 @@ export function useOzonListingQueue({
       });
 
       const draft = await api.ozon.generateDraft(rows);
+
+      // Start AI attribute fill in background — don't block status update
+      void fillDraftAttributes(draft, rows).catch(() => {});
+
       const missingFields = unique([
         ...sourceMissingFields,
         ...(Array.isArray(draft.missing) ? draft.missing.map(String) : []),
