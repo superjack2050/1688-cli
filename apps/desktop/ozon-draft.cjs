@@ -531,8 +531,10 @@ function normalizeGenerated(data, candidates) {
   const matched = data?.matched_category && typeof data.matched_category === 'object'
     ? data.matched_category
     : {};
-  const candidateIndex = toInt(matched.candidate_index);
-  const candidate = candidateIndex !== null && candidates[candidateIndex] ? candidates[candidateIndex] : null;
+  const candidateIndex = toCandidateIndex(matched.candidate_index);
+  const candidate = candidateIndex === null
+    ? null
+    : candidates.find((item) => Number(item.candidate_index) === candidateIndex) || candidates[candidateIndex] || null;
   const tags = Array.isArray(data?.tags) ? data.tags.map((item) => String(item).trim()).filter(Boolean) : [];
   return {
     title_ru: String(data?.title_ru || '').trim().slice(0, 500),
@@ -658,6 +660,13 @@ function positiveNumber(value) {
 function numberForOzon(value) {
   const number = positiveNumber(value);
   return number ? Math.max(1, Math.round(number)) : 0;
+}
+
+function toCandidateIndex(value) {
+  const number = Number(String(value ?? '').trim());
+  if (!Number.isFinite(number)) return null;
+  const integer = Math.round(number);
+  return integer >= 0 ? integer : null;
 }
 
 function toInt(value) {

@@ -27,9 +27,6 @@ export default function OzonSettingsModal({ mode, open, onClose }: Props) {
     currencyCode: 'CNY',
     isDefaultShop: false,
     note: '',
-    descId: '',
-    typeId: '',
-    categoryPath: '',
     warehouseId: '',
   });
   const [busy, setBusy] = useState(false);
@@ -55,9 +52,6 @@ export default function OzonSettingsModal({ mode, open, onClose }: Props) {
           currencyCode: data.ozon.currencyCode || 'CNY',
           isDefaultShop: Boolean(data.ozon.isDefaultShop),
           note: data.ozon.note || '',
-          descId: data.ozon.defaultDescriptionCategoryId || '',
-          typeId: data.ozon.defaultTypeId || '',
-          categoryPath: data.ozon.defaultCategoryPath || '',
           warehouseId: data.ozon.defaultWarehouseId || '',
         }));
       })
@@ -120,9 +114,6 @@ export default function OzonSettingsModal({ mode, open, onClose }: Props) {
               currencyCode: form.currencyCode,
               isDefaultShop: form.isDefaultShop,
               note: form.note.slice(0, 200),
-              defaultDescriptionCategoryId: form.descId,
-              defaultTypeId: form.typeId,
-              defaultCategoryPath: form.categoryPath,
               defaultWarehouseId: form.warehouseId,
               ...(form.ozonApiKey.trim() ? { apiKey: form.ozonApiKey.trim() } : {}),
             },

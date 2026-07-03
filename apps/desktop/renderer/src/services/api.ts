@@ -99,9 +99,6 @@ export interface OzonSettingsPublic {
     currencyCode: string;
     isDefaultShop: boolean;
     note: string;
-    defaultDescriptionCategoryId: string;
-    defaultTypeId: string;
-    defaultCategoryPath: string;
     defaultWarehouseId: string;
     enableRealSubmit?: boolean;
   };
@@ -121,9 +118,6 @@ export interface OzonSettingsPatch {
     currencyCode?: string;
     isDefaultShop?: boolean;
     note?: string;
-    defaultDescriptionCategoryId?: string;
-    defaultTypeId?: string;
-    defaultCategoryPath?: string;
     defaultWarehouseId?: string;
     enableRealSubmit?: boolean;
   };
