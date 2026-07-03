@@ -247,6 +247,8 @@ export interface OzonAttributeValuesResponse {
   typeId: number;
   attributeId: number;
   query?: string;
+  endpoint?: string;
+  searchMode?: string;
   values: OzonAttributeValue[];
   hasNext: boolean;
   raw?: unknown;

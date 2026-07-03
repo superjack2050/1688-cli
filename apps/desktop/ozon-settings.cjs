@@ -412,9 +412,25 @@ async function getCategoryAttributeValues(userDataPath, params = {}) {
     language,
   };
   if (query) body.value = query;
-  if (lastValueId > 0) body.last_value_id = lastValueId;
+  if (!query && lastValueId > 0) body.last_value_id = lastValueId;
 
-  const response = await callOzonSellerApi(shop, '/v1/description-category/attribute/values', body);
+  const endpoint = query
+    ? '/v1/description-category/attribute/values/search'
+    : '/v1/description-category/attribute/values';
+  const searchMode = query ? 'server_search' : 'list';
+
+  let response;
+  if (query) {
+    try {
+      response = await callOzonSellerApi(shop, endpoint, body);
+    } catch {
+      // fallback: if search endpoint fails, try list endpoint with query filter
+      response = await callOzonSellerApi(shop, '/v1/description-category/attribute/values', body);
+    }
+  } else {
+    response = await callOzonSellerApi(shop, endpoint, body);
+  }
+
   if (!response.ok) {
     throw new Error(`加载 Ozon 字典值失败：HTTP ${response.data?.status || '?'} ${safeJson(response.data?.response || response.data)}`);
   }
@@ -425,6 +441,8 @@ async function getCategoryAttributeValues(userDataPath, params = {}) {
     typeId,
     attributeId,
     query,
+    endpoint,
+    searchMode,
     values: normalizeAttributeValues(response.data),
     hasNext: response.data?.has_next === true,
     raw: response.data,

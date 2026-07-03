@@ -567,6 +567,30 @@ function FieldError({ show, text: value }: { show: boolean; text: string }) {
   return <small className="ozon-draft-error-text">{value}</small>;
 }
 
+function normalizeBrandText(value: unknown): string {
+  return String(value || '').trim().toLowerCase().replace(/\s+/g, '');
+}
+
+function rankBrandOptions(options: OzonAttributeValue[], query: string): OzonAttributeValue[] {
+  const needle = normalizeBrandText(query);
+  if (!needle) return [];
+
+  return options
+    .map((option) => {
+      const label = normalizeBrandText(option.value);
+      let score = 0;
+      if (label === needle) score += 100;
+      if (label.startsWith(needle)) score += 70;
+      if (label.includes(needle)) score += 50;
+      if (needle.includes(label)) score += 20;
+      return { option, score };
+    })
+    .filter((item) => item.score > 0)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 5)
+    .map((item) => item.option);
+}
+
 function BrandDictionaryField({
   attr,
   value,
@@ -586,6 +610,7 @@ function BrandDictionaryField({
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState('');
   const [options, setOptions] = useState<OzonAttributeValue[]>([]);
+  const [searched, setSearched] = useState(false);
 
   async function searchBrand(searchText?: string) {
     const keyword = text(searchText ?? query);
@@ -594,18 +619,20 @@ function BrandDictionaryField({
 
     setLoading(true);
     setMessage('');
+    setSearched(true);
     try {
       const response = await getApi().ozon.getCategoryAttributeValues({
         descriptionCategoryId,
         typeId,
         attributeId: attr.id,
         language: 'ZH_HANS',
-        limit: 5,
+        limit: 200,
         query: keyword,
       });
       const values = response.values || [];
-      setOptions(values.slice(0, 5));
-      setMessage(values.length ? '' : '未找到相近品牌。');
+      const ranked = rankBrandOptions(values, keyword);
+      setOptions(ranked);
+      setMessage(ranked.length ? '' : '未找到相近品牌。');
     } catch (error) {
       setOptions([]);
       setMessage(error instanceof Error ? error.message : String(error));
@@ -620,6 +647,7 @@ function BrandDictionaryField({
     setQuery(label);
     onChange(label, { [label]: option.id });
     setOptions([]);
+    setSearched(false);
     setMessage('');
   }
 
@@ -630,9 +658,12 @@ function BrandDictionaryField({
           value={query}
           onChange={(event) => {
             setQuery(event.target.value);
-            onChange(event.target.value, valueIds);
+            setSearched(false);
+            setOptions([]);
+            setMessage('');
+            onChange(event.target.value, {});
           }}
-          placeholder="输入品牌，例如 NO NAME、Nike"
+          placeholder="输入品牌"
         />
         <button type="button" onClick={() => searchBrand()} disabled={loading}>
           🔍
@@ -641,7 +672,7 @@ function BrandDictionaryField({
 
       {message && <small>{message}</small>}
 
-      {options.length > 0 && (
+      {searched && options.length > 0 && (
         <div className="ozon-brand-options">
           {options.map((option) => {
             const label = text(option.value);
@@ -1089,21 +1120,22 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onTo
       typeId,
       attributeId: ATTR_BRAND,
       language: 'ZH_HANS',
-      limit: 5,
+      limit: 10,
       query: 'NO NAME',
     }).then((response) => {
       if (!alive) return;
       const values = response.values || [];
-      const exact = values.find((item) => text(item.value).toUpperCase() === 'NO NAME')
-        || values.find((item) => /no\s*name/i.test(text(item.value)));
-      if (exact?.id) {
-        updateField('brand', text(exact.value) || 'NO NAME');
-        updateDictionaryValueIds(ATTR_BRAND, { [text(exact.value) || 'NO NAME']: exact.id });
+      const ranked = rankBrandOptions(values, 'NO NAME');
+      const exact = ranked.length > 0 ? ranked[0] : undefined;
+      const strictMatch = exact && normalizeBrandText(exact.value) === 'noname';
+      const target = strictMatch ? exact : null;
+      if (target?.id) {
+        updateField('brand', text(target.value) || 'NO NAME');
+        updateDictionaryValueIds(ATTR_BRAND, { [text(target.value) || 'NO NAME']: target.id });
       }
     }).catch(() => { /* non-blocking */ });
 
     return () => { alive = false; };
-    // Only fire when category changes; brandAttribute, descId, typeId stabilize
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [brandAttribute?.dictionaryId, form.descriptionCategoryId, form.typeId]);
 
