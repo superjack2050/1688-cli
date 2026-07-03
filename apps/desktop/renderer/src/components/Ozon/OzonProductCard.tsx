@@ -171,12 +171,12 @@ export default function OzonProductCard({ task, onInspect }: Props) {
             {message}
           </div>
         )}
+      </div>
 
-        <div className="ozon-product-actions">
-          <button type="button" onClick={() => onInspect(task)}>
-            查看草稿
-          </button>
-        </div>
+      <div className="ozon-product-actions">
+        <button type="button" onClick={() => onInspect(task)}>
+          查看草稿
+        </button>
       </div>
     </article>
   );

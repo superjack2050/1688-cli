@@ -974,11 +974,13 @@
 .ozon-product-message--failed { color: #b91c1c; background: rgba(254,226,226,0.90); }
 
 .ozon-product-actions {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-column: 1 / -1;
+  display: flex;
+  justify-content: flex-end;
   align-items: center;
   gap: 8px;
   margin-top: auto;
+  padding-top: 8px;
 }
 
 .ozon-product-actions button,
