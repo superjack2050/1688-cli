@@ -961,18 +961,13 @@ async function applyBackendDefaultsToItems(settings, userDataPath, descId, typeI
       if (attrs.some((a) => Number(a.id) === 85 && Array.isArray(a.values) && a.values.length > 0)) hasBrand = true;
     }
     if (!hasBrand) {
-      // Try to resolve NO NAME dictionary_value_id first
-      const resolved = await resolveSingleDictionaryValue(settings, userDataPath, descId, typeId, brandAttr, 'NO NAME');
-      if (resolved && resolved.dictionary_value_id > 0) {
-        for (const item of items) {
-          if (!item || typeof item !== 'object') continue;
-          const attrs = Array.isArray(item.attributes) ? item.attributes : [];
-          attrs.push(buildSingleAttributeEntry(85, resolved.value_text || 'NO NAME', resolved.dictionary_value_id));
-          item.attributes = attrs;
-        }
+      for (const item of items) {
+        if (!item || typeof item !== 'object') continue;
+        const attrs = Array.isArray(item.attributes) ? item.attributes : [];
+        // Ozon brand attribute accepts free text — "无品牌" is the documented value for unbranded products
+        attrs.push(buildSingleAttributeEntry(85, '无品牌', 0));
+        item.attributes = attrs;
       }
-      // If NO NAME is not in the Ozon brand dictionary, leave brand empty.
-      // The user must pick a real brand from the Ozon list.
     }
   }
 }
