@@ -1266,6 +1266,8 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onTo
     const attrs = visibleFeatureAttrs;
     if (!attrs.length) return;
 
+    // Mark filling key immediately so we don't re-trigger across renders
+    setAttributeAiFilledKey(attributeAutoFillKey);
     setAttributeAiFilling(true);
     setMessage('AI 正在根据商品数据填写类目特征...');
 
@@ -1280,7 +1282,6 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onTo
       });
 
       await applyAttributeSuggestions(response.attributes || [], attrs);
-      setAttributeAiFilledKey(attributeAutoFillKey);
       setMessage('AI 已尝试填写类目特征，请检查字典项是否正确。');
     } catch (error) {
       setMessage(error instanceof Error ? error.message : String(error));
@@ -1289,16 +1290,13 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onTo
     }
   }
 
-  // Auto-trigger AI attribute fill once per category
+  // Auto-trigger AI attribute fill immediately when category attributes are ready.
+  // Attributes must be filled as part of draft completion — not deferred until the
+  // user clicks the "特征" tab inside the editor.
   useEffect(() => {
     if (!visibleFeatureAttrs.length) return;
     if (!form.descriptionCategoryId || !form.typeId) return;
     if (attributeAiFilledKey === attributeAutoFillKey) return;
-
-    const requiredMissing = visibleFeatureAttrs.filter(
-      (attr) => attr.isRequired && !text(dynamicValues[String(attr.id)]),
-    );
-    if (!requiredMissing.length) return;
 
     void fillCategoryAttributesByAi();
     // eslint-disable-next-line react-hooks/exhaustive-deps
