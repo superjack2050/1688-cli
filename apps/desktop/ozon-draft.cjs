@@ -723,30 +723,37 @@ function applyVariantMetadata(items, variant) {
 // ── Fill category attributes during draft generation ──
 
 async function fillCategoryAttributes(settings, sourceRows, normalized) {
+  const log = (msg) => process.stderr.write(`[ozon-draft:attr] ${msg}\n`);
   try {
     const category = normalized.matched_category;
-    if (!category || typeof category !== 'object') return;
+    if (!category || typeof category !== 'object') { log('SKIP: no matched_category'); return; }
 
     const descId = Number(category.description_category_id || 0);
     const typeId = Number(category.type_id || 0);
-    if (!descId || !typeId) return;
+    log(`category descId=${descId} typeId=${typeId} path=${category.path || ''}`);
+    if (!descId || !typeId) { log('SKIP: descId or typeId is 0'); return; }
 
     const userDataPath = cleanText(settings?.userDataPath || settings?.paths?.userDataPath || '');
+    log(`userDataPath=${userDataPath || '(empty)'}`);
 
     // 1. Fetch category attributes from Ozon
+    log('step 1: getCategoryAttributes...');
     const catAttrs = await getCategoryAttributes(userDataPath, {
       descriptionCategoryId: descId,
       typeId,
       language: 'ZH_HANS',
     });
     const attrs = (catAttrs.attributes || []).filter((a) => !a.isAspect);
-    if (!attrs.length) return;
+    log(`step 1 done: ${attrs.length} attrs (non-aspect)`);
+    if (!attrs.length) { log('SKIP: no attributes'); return; }
 
     // 2. AI suggests attribute values
+    log('step 2: callAi for suggestions...');
     const messages = buildAttributeSuggestionMessages(sourceRows, attrs, {}, { descriptionCategoryId: descId, typeId, path: category.path || '' });
     const suggestionData = await callAi(settings.ai, messages);
     const suggestions = normalizeAttributeSuggestions(suggestionData, attrs);
     const attrList = suggestions.attributes || [];
+    log(`step 2 done: ${attrList.length} suggestions`);
 
     // 3. Resolve dictionary values to Chinese
     const resolved = [];
@@ -766,7 +773,6 @@ async function fillCategoryAttributes(settings, sourceRows, normalized) {
               query,
             });
             const searchOptions = searchResp.values || [];
-            // Get ZH_HANS display values for the matched dictionary ID
             const zhResp = await getCategoryAttributeValues(userDataPath, {
               descriptionCategoryId: descId,
               typeId,
@@ -785,25 +791,22 @@ async function fillCategoryAttributes(settings, sourceRows, normalized) {
                 confidence: s.confidence || 0,
               });
             }
-          } catch {
-            // Skip if dictionary resolution fails
+          } catch (e) {
+            log(`dict resolve failed for attr ${attr.id}: ${e?.message || e}`);
           }
         }
       } else {
-        const text = cleanText(s.value_text);
-        if (text) {
-          resolved.push({
-            attribute_id: attr.id,
-            value_text: text,
-            confidence: s.confidence || 0,
-          });
+        const txt = cleanText(s.value_text);
+        if (txt) {
+          resolved.push({ attribute_id: attr.id, value_text: txt, confidence: s.confidence || 0 });
         }
       }
     }
 
+    log(`step 3 done: ${resolved.length} resolved values`);
     normalized.attribute_values = resolved;
   } catch (err) {
-    process.stderr.write(`[ozon-draft] fillCategoryAttributes failed: ${err?.message || err}\n`);
+    log(`FAILED: ${err?.message || err}\n${err?.stack || ''}`);
   }
 }
 
