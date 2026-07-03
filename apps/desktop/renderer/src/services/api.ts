@@ -249,27 +249,6 @@ export interface OzonAttributeSuggestion {
   reason?: string;
 }
 
-export interface OzonDictionaryTranslateItem {
-  id: number;
-  value: string;
-  attributeId?: number;
-  attributeName?: string;
-  dictionaryId?: number;
-}
-
-export interface OzonDictionaryTranslatedItem {
-  id: number;
-  value: string;
-  displayValue: string;
-  sourceLanguage?: string;
-  targetLanguage?: string;
-}
-
-export interface OzonDictionaryTranslateResponse {
-  ok: boolean;
-  values: OzonDictionaryTranslatedItem[];
-}
-
 export interface OzonAttributeSuggestionsResponse {
   ok: boolean;
   attributes: OzonAttributeSuggestion[];
@@ -341,11 +320,6 @@ interface DesktopApi {
       form: Record<string, unknown>;
       category: { descriptionCategoryId: number; typeId: number; path?: string };
     }) => Promise<OzonAttributeSuggestionsResponse>;
-    translateDictionaryValues: (params: {
-      values: OzonDictionaryTranslateItem[];
-      targetLanguage?: string;
-      context?: Record<string, unknown>;
-    }) => Promise<OzonDictionaryTranslateResponse>;
     submitDraft: (draft: OzonDraft, confirmed: boolean) => Promise<Record<string, unknown>>;
   };
 }

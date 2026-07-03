@@ -43,7 +43,6 @@ const {
   generateOzonDraft,
   submitOzonDraft,
   generateOzonAttributeSuggestions,
-  translateOzonDictionaryValues,
 } = require('../ozon-draft.cjs');
 
 // ---------- runtime ----------
@@ -258,13 +257,6 @@ function registerIpc() {
     generateOzonAttributeSuggestions({ ...loadOzonSettings(userDataDir(), { includeSecrets: true }), userDataPath: userDataDir() }, params || {}),
   );
 
-  ipcMain.handle('desktop:translateOzonDictionaryValues', async (_event, params) =>
-    translateOzonDictionaryValues(
-      { ...loadOzonSettings(userDataDir(), { includeSecrets: true }), userDataPath: userDataDir() },
-      params || {},
-      userDataDir(),
-    ),
-  );
   ipcMain.handle('desktop:submitOzonDraft', async (_event, draft, confirmed) => {
     if (confirmed !== true) {
       throw new Error('提交 Ozon 前必须确认。');

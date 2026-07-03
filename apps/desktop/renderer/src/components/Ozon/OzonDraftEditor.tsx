@@ -234,21 +234,10 @@ function parseCustomAttributes(value: string): Record<string, unknown>[] {
   return attrs;
 }
 
-function mapDisplayValueToPayloadValue(
-  attrId: number,
-  value: string,
-  payloadMap: Record<string, string>,
-): string {
-  return lineList(value)
-    .map((line) => payloadMap[line] || line)
-    .join('\n');
-}
-
 function buildDynamicAttributes(
   dynamicValues: Record<string, string>,
   categoryAttributes: OzonCategoryAttribute[],
   dictionaryValueIds: DictionaryValueIds,
-  dictionaryPayloadValues?: Record<string, Record<string, string>>,
 ): Record<string, unknown>[] {
   const attrs: Record<string, unknown>[] = [];
   const seen = new Set<number>();
@@ -258,9 +247,7 @@ function buildDynamicAttributes(
     const attrId = Number(rawId);
     if (!attrId || CONTROLLED_ATTR_IDS.has(attrId) || seen.has(attrId)) continue;
     if (knownIds.size > 0 && !knownIds.has(attrId)) continue;
-    const payloadMap = (dictionaryPayloadValues || {})[String(attrId)] || {};
-    const payloadValue = mapDisplayValueToPayloadValue(attrId, value, payloadMap);
-    const attr = buildAttribute(attrId, payloadValue, dictionaryValueIds[String(attrId)]);
+    const attr = buildAttribute(attrId, value, dictionaryValueIds[String(attrId)]);
     if (!attr) continue;
     attrs.push(attr);
     seen.add(attrId);
@@ -275,10 +262,9 @@ function buildAttributes(
   dynamicValues: Record<string, string>,
   categoryAttributes: OzonCategoryAttribute[],
   dictionaryValueIds: DictionaryValueIds,
-  dictionaryPayloadValues?: Record<string, Record<string, string>>,
 ): Record<string, unknown>[] {
   const customAttrs = parseCustomAttributes(form.customAttributes);
-  const dynamicAttrs = buildDynamicAttributes(dynamicValues, categoryAttributes, dictionaryValueIds, dictionaryPayloadValues || {});
+  const dynamicAttrs = buildDynamicAttributes(dynamicValues, categoryAttributes, dictionaryValueIds);
   const customIds = new Set(customAttrs.map((attr) => Number(attr.id)).filter(Boolean));
   const dynamicIds = new Set(dynamicAttrs.map((attr) => Number(attr.id)).filter(Boolean));
   const baseAttrs = Array.isArray(baseItem.attributes) ? baseItem.attributes : [];
@@ -436,7 +422,6 @@ function buildDraft(
   dynamicValues: Record<string, string>,
   categoryAttributes: OzonCategoryAttribute[],
   dictionaryValueIds: DictionaryValueIds,
-  dictionaryPayloadValues?: Record<string, Record<string, string>>,
 ): DraftBuildResult | null {
   if (!task.draft) return null;
 
@@ -446,7 +431,7 @@ function buildDraft(
   const images = lineList(form.images).map(normalizeImageUrl).filter(Boolean).slice(0, 15);
   const descriptionCategoryId = intForPayload(form.descriptionCategoryId);
   const typeId = intForPayload(form.typeId);
-  const attributes = buildAttributes(baseFirst, form, dynamicValues, categoryAttributes, dictionaryValueIds, dictionaryPayloadValues);
+  const attributes = buildAttributes(baseFirst, form, dynamicValues, categoryAttributes, dictionaryValueIds);
 
   const firstItem: Record<string, unknown> = {
     ...baseFirst,
@@ -1193,46 +1178,6 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onTo
   }
 
   async function translateVisibleDictionaryOptions(attr: OzonCategoryAttribute, options: OzonAttributeValue[], limit = 50) {
-    // Brand field never uses generic translation
-    if (attr.id === ATTR_BRAND) return;
-
-    const candidates = options
-      .filter((option) => shouldTranslateDictionaryValue(option.value))
-      .filter((option) => {
-        const key = dictionaryDisplayKey(attr.id, option.id, text(option.value));
-        return !dictionaryDisplayLabels[key];
-      })
-      .slice(0, limit);
-
-    if (!candidates.length) return;
-
-    try {
-      const response = await getApi().ozon.translateDictionaryValues({
-        values: candidates.map((option) => ({
-          id: option.id,
-          value: text(option.value),
-          attributeId: attr.id,
-          attributeName: attr.name,
-          dictionaryId: attr.dictionaryId,
-        })),
-        targetLanguage: 'zh-CN',
-        context: {
-          attributeName: attr.name,
-          categoryPath: form.categoryPath,
-        },
-      });
-
-      setDictionaryDisplayLabels((prev) => {
-        const next = { ...prev };
-        for (const item of response.values || []) {
-          const key = dictionaryDisplayKey(attr.id, item.id, item.value);
-          next[key] = item.displayValue || item.value;
-        }
-        return next;
-      });
-    } catch {
-      // Translation failure does not block dictionary selection
-    }
   }
 
   const visibleFeatureAttrs = useMemo(
@@ -1240,7 +1185,7 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onTo
     [categoryAttributes],
   );
 
-  async function resolveDictionaryValueForSuggestion(attr: OzonCategoryAttribute, query: string): Promise<{ label: string; payloadLabel: string; id: number } | null> {
+  async function resolveDictionaryValueForSuggestion(attr: OzonCategoryAttribute, query: string): Promise<{ label: string; id: number } | null> {
     if (!text(query)) return null;
     const descId = intForPayload(form.descriptionCategoryId);
     const typeId = intForPayload(form.typeId);
@@ -1258,9 +1203,7 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onTo
       const options = response.values || [];
       const ranked = rankDictionaryOptions(options, query);
       if (!ranked.length) return null;
-      const payloadLabel = text(ranked[0].value);
-      const displayLabel = normalizeDictionaryDisplayText(payloadLabel) || payloadLabel;
-      return { label: displayLabel, payloadLabel, id: ranked[0].id };
+      return { label: text(ranked[0].value), id: ranked[0].id };
     } catch {
       return null;
     }
@@ -1277,7 +1220,7 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onTo
     const selected = await resolveDictionaryValueForSuggestion(originAttr, '中国');
     if (!selected) return;
     updateDynamicValue(originAttr.id, selected.label);
-    updateDictionarySelection(originAttr.id, selected.label, selected.payloadLabel, selected.id);
+    updateDictionaryValueIds(originAttr.id, { [selected.label]: selected.id });
   }
 
   async function applyAttributeSuggestions(
@@ -1299,7 +1242,7 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onTo
         const selected = await resolveDictionaryValueForSuggestion(attr, dictionaryQuery || suggestedText);
         if (!selected) continue;
         updateDynamicValue(attr.id, selected.label);
-        updateDictionarySelection(attr.id, selected.label, selected.payloadLabel, selected.id);
+        updateDictionaryValueIds(attr.id, { [selected.label]: selected.id });
         continue;
       }
       updateDynamicValue(attr.id, suggestedText);
@@ -1453,8 +1396,8 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onTo
     [categoryAttributes, dynamicValues, form],
   );
   const buildResult = useMemo(
-    () => buildDraft(task, form, dynamicValues, categoryAttributes, dictionaryValueIds, dictionaryPayloadValues),
-    [categoryAttributes, dictionaryValueIds, dictionaryPayloadValues, dynamicValues, form, task],
+    () => buildDraft(task, form, dynamicValues, categoryAttributes, dictionaryValueIds),
+    [categoryAttributes, dictionaryValueIds, dynamicValues, form, task],
   );
   const missing = buildResult?.missing || task.missingFields || task.draft?.missing || [];
   const firstItem = buildResult?.firstItem || firstItemOf(task);
@@ -1559,7 +1502,7 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onTo
   }
 
   function applyDraft(showToast = true): DraftBuildResult | null {
-    const result = buildDraft(task, form, dynamicValues, categoryAttributes, dictionaryValueIds, dictionaryPayloadValues);
+    const result = buildDraft(task, form, dynamicValues, categoryAttributes, dictionaryValueIds);
     if (!result) {
       setMessage('当前任务还没有可编辑的 Ozon 草稿。');
       return null;
