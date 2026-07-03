@@ -667,7 +667,7 @@ function buildOzonItem(row, generated, settings, index) {
   const attrs = [];
   addAttribute(attrs, ATTR_MODEL_NAME, generated.model_name || generated.title_ru);
   addAttribute(attrs, ATTR_DESCRIPTION, generated.description_ru);
-  addAttribute(attrs, ATTR_TAGS, generated.tags.join('\n'));
+  addAttribute(attrs, ATTR_TAGS, generated.tags.join(' '));
   // Merge backend-generated category attributes into item.attributes
   addGeneratedCategoryAttributes(attrs, generated);
   return {
@@ -961,13 +961,8 @@ async function applyBackendDefaultsToItems(settings, userDataPath, descId, typeI
       if (attrs.some((a) => Number(a.id) === 85 && Array.isArray(a.values) && a.values.length > 0)) hasBrand = true;
     }
     if (!hasBrand) {
-      for (const item of items) {
-        if (!item || typeof item !== 'object') continue;
-        const attrs = Array.isArray(item.attributes) ? item.attributes : [];
-        // Ozon brand attribute accepts free text — "无品牌" is the documented value for unbranded products
-        attrs.push(buildSingleAttributeEntry(85, '无品牌', 0));
-        item.attributes = attrs;
-      }
+      // Brand is a strict dictionary attribute — only write if we can resolve a real dictionary_value_id.
+      // "无品牌" as free text is rejected by Ozon validation for most categories.
     }
   }
 }
@@ -1168,7 +1163,7 @@ function addAttribute(attrs, id, value) {
   attrs.push({
     id,
     complex_id: 0,
-    values: text.split(/\n+/).map((line) => ({ value: line.trim() })).filter((item) => item.value),
+    values: [{ value: text }],
   });
 }
 
