@@ -997,4 +997,159 @@ function normalizeAttributeSuggestions(data, categoryAttributes) {
   };
 }
 
-module.exports = { generateOzonDraft, submitOzonDraft, collectDraftMissing, generateOzonAttributeSuggestions };
+// ── Dictionary Value Translation (ru → zh) ──
+
+function dictionaryTranslateCachePath(userDataPath) {
+  return path.join(userDataPath || process.env.APPDATA || os.tmpdir(), '1688 to Ozon Studio', 'ozon_dictionary_display.zh_hans.json');
+}
+
+function loadTranslateCache(userDataPath) {
+  const file = dictionaryTranslateCachePath(userDataPath);
+  try {
+    if (fs.existsSync(file)) {
+      const data = JSON.parse(fs.readFileSync(file, 'utf8'));
+      return data && typeof data === 'object' ? data : {};
+    }
+  } catch {}
+  return {};
+}
+
+function saveTranslateCache(userDataPath, cache) {
+  const file = dictionaryTranslateCachePath(userDataPath);
+  try {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, JSON.stringify(cache, null, 2), 'utf8');
+  } catch {}
+}
+
+function translateCacheKey(attributeId, valueId, rawValue) {
+  return `${attributeId}:${valueId}:${rawValue}`;
+}
+
+async function translateOzonDictionaryValues(settings, params = {}, userDataPath = '') {
+  const values = Array.isArray(params.values) ? params.values : [];
+  const targetLanguage = cleanText(params.targetLanguage || 'zh-CN');
+  if (!values.length) return { ok: true, values: [] };
+  if (!settings.ai.apiKey) {
+    // No API key → return raw values as display
+    return {
+      ok: true,
+      values: values.map((item) => ({
+        id: Number(item.id || 0),
+        value: String(item.value || ''),
+        displayValue: String(item.value || ''),
+        sourceLanguage: 'unknown',
+        targetLanguage,
+      })),
+    };
+  }
+
+  const cache = loadTranslateCache(userDataPath);
+  const toTranslate = [];
+  const results = [];
+
+  for (const item of values) {
+    const id = Number(item.id || 0);
+    const value = String(item.value || '');
+    const attrId = Number(item.attributeId || item.attribute_id || 0);
+    const key = translateCacheKey(attrId, id, value);
+
+    if (cache[key]?.displayValue) {
+      results.push({ ...cache[key], id, value, sourceLanguage: cache[key].sourceLanguage || 'ru', targetLanguage });
+      continue;
+    }
+
+    // Skip values that don't need translation
+    if (/[一-鿿]/.test(value)) {
+      results.push({ id, value, displayValue: value, sourceLanguage: 'zh', targetLanguage });
+      continue;
+    }
+    // Keep safe ASCII (abbreviations, brand names, English)
+    if (/^[a-z0-9\s()+./_\-]+$/i.test(value)) {
+      results.push({ id, value, displayValue: value, sourceLanguage: 'en', targetLanguage });
+      continue;
+    }
+
+    toTranslate.push({ id, value, attributeId: attrId, attributeName: item.attributeName || '' });
+  }
+
+  // Translate in batches of 50
+  const BATCH_SIZE = 50;
+  for (let i = 0; i < toTranslate.length; i += BATCH_SIZE) {
+    const batch = toTranslate.slice(i, i + BATCH_SIZE);
+    try {
+      const batchResults = await callAiForTranslate(settings.ai, batch);
+      for (const r of batchResults) {
+        const key = translateCacheKey(r.attributeId || 0, r.id, r.value);
+        const entry = {
+          id: r.id,
+          value: r.value,
+          displayValue: r.displayValue || r.value,
+          attributeId: r.attributeId || 0,
+          sourceLanguage: 'ru',
+          updatedAt: new Date().toISOString(),
+        };
+        cache[key] = entry;
+        results.push({ ...entry, targetLanguage });
+      }
+    } catch {
+      // Fallback: raw value as display
+      for (const item of batch) {
+        results.push({ id: item.id, value: item.value, displayValue: item.value, sourceLanguage: 'ru', targetLanguage });
+      }
+    }
+  }
+
+  // Save cache
+  if (toTranslate.length > 0) saveTranslateCache(userDataPath, cache);
+
+  return { ok: true, values: results };
+}
+
+async function callAiForTranslate(ai, items) {
+  const payload = {
+    task: 'translate_ozon_dictionary_values_to_chinese',
+    values: items.map((item) => ({
+      id: item.id,
+      value: item.value,
+      attribute_id: item.attributeId,
+      attribute_name: item.attributeName,
+    })),
+    required_schema: {
+      values: [{ id: 'number', value: 'string', displayValue: 'string' }],
+    },
+    rules: [
+      'Return JSON only. No Markdown.',
+      'Translate the value field from Russian to Simplified Chinese for Chinese operators.',
+      'Keep abbreviations: TPE, PVC, ABS, USB, LED, etc.',
+      'Do NOT translate brand names or model numbers.',
+      'If value is already English alphanumeric, set displayValue = value.',
+      'Do not add explanations or marketing text.',
+      'If unsure, set displayValue to the original value.',
+    ],
+  };
+
+  return callAiInternal(ai, payload, 'values');
+}
+
+async function callAiInternal(ai, payload, resultKey) {
+  const messages = [
+    { role: 'system', content: 'You translate Ozon marketplace dictionary values from Russian to Simplified Chinese. Return compliant JSON only.' },
+    { role: 'user', content: JSON.stringify(payload) },
+  ];
+
+  const endpoint = chatEndpoint(ai.baseUrl);
+  const response = await fetch(endpoint, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${ai.apiKey}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model: ai.model || 'deepseek-chat', messages, temperature: 0.2, response_format: { type: 'json_object' } }),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(`AI 翻译失败：HTTP ${response.status}`);
+  const content = data?.choices?.[0]?.message?.content;
+  if (!content) throw new Error('AI 翻译响应为空。');
+  const parsed = parseJsonObject(content);
+  return Array.isArray(parsed?.[resultKey]) ? parsed[resultKey] : [];
+}
+
+module.exports = { generateOzonDraft, submitOzonDraft, collectDraftMissing, generateOzonAttributeSuggestions, translateOzonDictionaryValues };
