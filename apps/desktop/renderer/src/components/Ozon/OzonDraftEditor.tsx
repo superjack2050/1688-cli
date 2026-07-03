@@ -1320,15 +1320,9 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onTo
     }
   }
 
-  // Auto-trigger AI attribute fill immediately when category attributes are ready.
-  useEffect(() => {
-    if (!visibleFeatureAttrs.length) return;
-    if (!form.descriptionCategoryId || !form.typeId) return;
-    if (attributeAiFilledKey === attributeAutoFillKey) return;
-
-    void fillCategoryAttributesByAi();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [visibleFeatureAttrs, form.descriptionCategoryId, form.typeId]);
+  // Attribute values are pre-filled by the backend during generateOzonDraft.
+  // They come from draft.items[0].attributes via attributeValuesById on mount.
+  // No auto AI fill on open — user clicks "AI 补填空特征" button to fill gaps.
 
   useEffect(() => {
     const nextForm = createDraftForm(task);
@@ -1829,7 +1823,7 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onTo
                 <strong>类目特征</strong>
                 <span>{featureAttributes.length ? `${featureAttributes.length} 项` : '未返回额外特征，可用自定义属性补充'}</span>
                 <button type="button" className="glass-btn-secondary" onClick={() => fillCategoryAttributesByAi(true)} disabled={attributeAiFilling} style={{ height: 30, fontSize: 11, padding: '0 10px' }}>
-                  {attributeAiFilling ? 'AI 填写中...' : 'AI 填充特征'}
+                  {attributeAiFilling ? 'AI 填写中...' : 'AI 补填空特征'}
                 </button>
               </div>
               {featureAttributes.map((attr) => (

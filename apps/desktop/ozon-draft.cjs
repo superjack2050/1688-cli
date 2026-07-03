@@ -63,7 +63,8 @@ async function generateOzonDraft(settings, rows = []) {
   }
   const missing = collectDraftMissing(items, { sourceRows, generated: normalized, variant });
 
-  process.stderr.write(`[ozon-draft] return: generated keys=${Object.keys(normalized).join(',')} attrValues=${normalized.attribute_values?.length || 0}\n`);
+  const firstItemAttrs = Array.isArray(items[0]?.attributes) ? items[0].attributes : [];
+  process.stderr.write(`[ozon-draft] return: attrValues=${normalized.attribute_values?.length || 0} itemAttrs=${firstItemAttrs.length} itemAttrIds=${firstItemAttrs.map((a) => a.id).join(',')}\n`);
 
   return {
     draftId: `ozon-draft-${Date.now()}`,

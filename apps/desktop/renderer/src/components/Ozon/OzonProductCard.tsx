@@ -98,7 +98,7 @@ function updateTimeOf(task: OzonListingTask): string {
   });
 }
 
-export default function OzonProductCard({ task, onInspect }: Props) {
+export default function OzonProductCard({ task, onInspect, onCopyDraft }: Props) {
   const [imageFailed, setImageFailed] = useState(false);
   const statusGroup = statusGroupOf(task.status);
   const message = formatOzonTaskDisplayMessage(task);
@@ -155,12 +155,30 @@ export default function OzonProductCard({ task, onInspect }: Props) {
             {message}
           </div>
         )}
+
+        {(() => {
+          const item = task.draft?.items?.[0];
+          const attrCount = Array.isArray(item?.attributes) ? item.attributes.length : 0;
+          if (attrCount > 3) {
+            return (
+              <div className="ozon-product-attr-hint">
+                已写入 {attrCount} 个 Ozon 属性
+              </div>
+            );
+          }
+          return null;
+        })()}
       </div>
 
       <div className="ozon-product-actions">
         <button type="button" onClick={() => onInspect(task)}>
           查看草稿
         </button>
+        {task.draft && onCopyDraft && (
+          <button type="button" onClick={() => onCopyDraft(task)}>
+            复制 Payload
+          </button>
+        )}
       </div>
     </article>
   );

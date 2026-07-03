@@ -359,17 +359,35 @@ export function useOzonListingQueue({
 
       const draft = await api.ozon.generateDraft(rows);
 
+      // Compute attribute stats for diagnostics
+      const items = Array.isArray(draft.items) ? draft.items : [];
+      const firstItemAttrs = Array.isArray(items[0]?.attributes) ? items[0].attributes : [];
+      const genAttrValues = Array.isArray(draft.generated?.attribute_values) ? draft.generated.attribute_values : [];
+      const attrStats = {
+        itemAttributeCount: firstItemAttrs.length,
+        generatedAttributeValuesCount: genAttrValues.length,
+        itemAttributeIds: firstItemAttrs.map((a) => Number(a.id || 0)).filter(Boolean),
+      };
+
+      const missing = Array.isArray(draft.missing) ? draft.missing : [];
+      const hasMissing = missing.length > 0;
+
       upsertOzonTask(entry.key, {
-        status: 'draft_ready',
+        status: hasMissing ? 'needs_manual' : 'draft_ready',
         draftId: draft.draftId,
         draft,
-        message: '草稿已生成',
+        missingFields: missing,
+        message: hasMissing
+          ? `草稿已生成，仍需人工补充：${missing.join('、')}`
+          : '草稿已生成，可检查后提交 Ozon',
+        debug: { attrStats },
         finishedAt: new Date().toISOString(),
       });
 
       ozonListingLog('generateDraft done', {
         offerId: deepItem.offerId,
         draftId: draft.draftId,
+        attrStats,
       });
     } catch (error) {
       const message = errorMessageOf(error);
