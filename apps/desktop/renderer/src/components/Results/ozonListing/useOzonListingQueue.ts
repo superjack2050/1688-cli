@@ -337,7 +337,7 @@ export function useOzonListingQueue({
     return null;
   }
 
-  async function fillDraftAttributes(draft: OzonDraft, rows: Array<Record<string, unknown>>): Promise<void> {
+  async function fillDraftAttributes(entry: OzonListingQueueEntry, draft: OzonDraft, rows: Array<Record<string, unknown>>): Promise<void> {
     try {
       const generated = (draft.generated || {}) as Record<string, unknown>;
       const category = (generated.matched_category || {}) as Record<string, unknown>;
@@ -366,6 +366,9 @@ export function useOzonListingQueue({
         draftId: draft.draftId,
         suggestionCount: suggestions.attributes?.length || 0,
       });
+
+      // Republish so consumers (OzonDraftEditor) see the updated draft
+      upsertOzonTask(entry.key, { updatedAt: new Date().toISOString() });
     } catch (err) {
       ozonListingLog('fillDraftAttributes failed', { error: errorMessageOf(err) });
     }
@@ -403,8 +406,8 @@ export function useOzonListingQueue({
 
       const draft = await api.ozon.generateDraft(rows);
 
-      // Start AI attribute fill in background — don't block status update
-      void fillDraftAttributes(draft, rows).catch(() => {});
+      // Start AI attribute fill in background — republishes task on completion
+      fillDraftAttributes(entry, draft, rows);
 
       const missingFields = unique([
         ...sourceMissingFields,
