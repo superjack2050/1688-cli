@@ -766,8 +766,7 @@ async function fillCategoryAttributes(settings, sourceRows, normalized) {
               query,
             });
             const searchOptions = searchResp.values || [];
-            const ranked = (searchOptions || []).sort(() => 0);
-            // Get ZH_HANS display values for matched IDs
+            // Get ZH_HANS display values for the matched dictionary ID
             const zhResp = await getCategoryAttributeValues(userDataPath, {
               descriptionCategoryId: descId,
               typeId,
@@ -803,8 +802,8 @@ async function fillCategoryAttributes(settings, sourceRows, normalized) {
     }
 
     normalized.attribute_values = resolved;
-  } catch {
-    // Attribute filling failure does not block draft generation
+  } catch (err) {
+    process.stderr.write(`[ozon-draft] fillCategoryAttributes failed: ${err?.message || err}\n`);
   }
 }
 
