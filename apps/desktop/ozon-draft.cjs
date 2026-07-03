@@ -892,14 +892,19 @@ async function completeOzonDraftItems(settings, sourceRows, normalized, items) {
   // Step 4: AI retry for missing required — up to 2 rounds
   for (let attempt = 1; attempt <= 2 && missingRequired.length > 0; attempt++) {
     process.stderr.write(`[ozon-draft] retry round ${attempt}: ${missingRequired.length} missing required attrs\n`);
-    const suggestions = await generateMissingAttributeSuggestions(settings, sourceRows, normalized, missingRequired, fillableAttrs);
+    try {
+      const suggestions = await generateMissingAttributeSuggestions(settings, sourceRows, normalized, missingRequired, fillableAttrs);
 
-    const resolved = await resolveAttributeSuggestionsToOzonValues(
-      settings, userDataPath, descId, typeId, suggestions, fillableAttrs,
-    );
+      const resolved = await resolveAttributeSuggestionsToOzonValues(
+        settings, userDataPath, descId, typeId, suggestions, fillableAttrs,
+      );
 
-    applyGeneratedAttributeValuesToItems(items, resolved);
-    mergedValues = mergeAttributeValues(mergedValues, resolved);
+      applyGeneratedAttributeValuesToItems(items, resolved);
+      mergedValues = mergeAttributeValues(mergedValues, resolved);
+    } catch (err) {
+      process.stderr.write(`[ozon-draft] retry round ${attempt} failed: ${err?.message || err}\n`);
+      break;
+    }
     missingRequired = missingRequiredCategoryAttributes(items[0], requiredAttrs);
   }
 
@@ -955,10 +960,13 @@ async function applyBackendDefaultsToItems(settings, userDataPath, descId, typeI
       if (attrs.some((a) => Number(a.id) === 85 && Array.isArray(a.values) && a.values.length > 0)) hasBrand = true;
     }
     if (!hasBrand) {
+      // Try to resolve NO NAME dictionary_value_id first
+      const resolved = await resolveSingleDictionaryValue(settings, userDataPath, descId, typeId, brandAttr, 'NO NAME');
+      const brandDictId = resolved ? resolved.dictionary_value_id : 0;
       for (const item of items) {
         if (!item || typeof item !== 'object') continue;
         const attrs = Array.isArray(item.attributes) ? item.attributes : [];
-        attrs.push(buildSingleAttributeEntry(85, 'NO NAME', 0));
+        attrs.push(buildSingleAttributeEntry(85, 'NO NAME', brandDictId));
         item.attributes = attrs;
       }
     }
