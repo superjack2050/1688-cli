@@ -5,10 +5,8 @@ import { normalizeOzonTaskError } from '../../Ozon/ozonError';
 import type { ProgressOfferCardItem } from '../ProgressOfferCard';
 import { ozonListingLog } from './debug';
 import {
-  collectRowMissingFields,
   isAiKeyMissingMessage,
   precheckProgressCardForOzon,
-  unique,
 } from './precheck';
 import type {
   OzonListingQueueEntry,

@@ -1,16 +1,13 @@
 import type { OzonListingTask } from '../Results/ozonListing/types';
-import { formatMissingFields } from '../Results/ozonListing/precheck';
 
 type OzonErrorContext = {
-  phase?: 'generate' | 'deep_collect' | 'timeout' | 'missing_fields' | 'submit' | 'unknown';
-  missingFields?: string[];
+  phase?: 'generate' | 'deep_collect' | 'timeout' | 'submit' | 'unknown';
   fallback?: string;
 };
 
 const UNSAFE_SYSTEM_ERROR_RE = /remote method|desktop:|typeerror|referenceerror|syntaxerror|unhandled|failed to fetch|networkerror|econn|stack trace|http \d{3}/i;
 const AI_CONFIG_RE = /deepseek|api[-_\s]?key|apikey|ai key|model|authorization|unauthorized|未配置|密钥/i;
 const TIMEOUT_RE = /timeout|timed out|超时/i;
-const MISSING_RE = /missing|required|缺少|缺失|必填|needs_review|needs manual/i;
 const DEEP_RE = /deep|offer|captcha|verify|risk|punish|深度采集|深采|验证码|风控|拦截/i;
 
 function rawMessageOf(error: unknown): string {
@@ -33,7 +30,6 @@ function isUnsafeSystemMessage(value: string): boolean {
 
 export function normalizeOzonTaskError(error: unknown, context: OzonErrorContext = {}): string {
   const raw = rawMessageOf(error).trim();
-  const missingFields = context.missingFields || [];
 
   if (context.phase === 'submit') {
     if (raw && hasChinese(raw)) return raw;
@@ -70,10 +66,7 @@ export function formatOzonTaskDisplayMessage(task: OzonListingTask): string {
   if (task.status === 'listing_ready') return task.message || 'Ozon 商品已导入，价格和库存链路已完成。';
 
   if (task.status === 'needs_manual') {
-    return normalizeOzonTaskError(task.message || '', {
-      phase: 'missing_fields',
-      missingFields: task.missingFields,
-    });
+    return task.message || '需人工补充';
   }
 
   if (task.status === 'deep_failed') {
