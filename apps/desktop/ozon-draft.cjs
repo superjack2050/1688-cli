@@ -63,6 +63,8 @@ async function generateOzonDraft(settings, rows = []) {
   }
   const missing = collectDraftMissing(items, { sourceRows, generated: normalized, variant });
 
+  process.stderr.write(`[ozon-draft] return: generated keys=${Object.keys(normalized).join(',')} attrValues=${normalized.attribute_values?.length || 0}\n`);
+
   return {
     draftId: `ozon-draft-${Date.now()}`,
     status: missing.length ? 'needs_review' : 'ready',
