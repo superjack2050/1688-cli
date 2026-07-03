@@ -883,7 +883,7 @@ async function completeOzonDraftItems(settings, sourceRows, normalized, items) {
   applyGeneratedAttributeValuesToItems(items, normalized.attribute_values);
 
   // Step 2: apply backend defaults (origin country, brand, weight)
-  await applyBackendDefaultsToItems(settings, userDataPath, descId, typeId, sourceRows, items, fillableAttrs);
+  await applyBackendDefaultsToItems(settings, userDataPath, descId, typeId, sourceRows, items, fillableAttrs, allAttrs);
 
   // Step 3: check what's still missing
   let missingRequired = missingRequiredCategoryAttributes(items[0], requiredAttrs);
@@ -933,7 +933,7 @@ function missingRequiredCategoryAttributes(item, requiredAttrs) {
   });
 }
 
-async function applyBackendDefaultsToItems(settings, userDataPath, descId, typeId, sourceRows, items, fillableAttrs) {
+async function applyBackendDefaultsToItems(settings, userDataPath, descId, typeId, sourceRows, items, fillableAttrs, allAttrs) {
   // Origin country → 中国
   for (const attr of fillableAttrs) {
     const name = (attr.name || '').toLowerCase();
@@ -951,8 +951,9 @@ async function applyBackendDefaultsToItems(settings, userDataPath, descId, typeI
     }
   }
 
-  // Brand → NO NAME (only if not set)
-  const brandAttr = fillableAttrs.find((a) => Number(a.id) === 85);
+  // Brand → NO NAME (only if not set). Search all attrs (not fillableAttrs)
+  // because brand is in CONTROLLED_ATTR_IDS and excluded from fillableAttrs.
+  const brandAttr = allAttrs.find((a) => Number(a.id) === 85);
   if (brandAttr) {
     let hasBrand = false;
     for (const item of items) {
