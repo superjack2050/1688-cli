@@ -1224,6 +1224,19 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onTo
     updateDictionaryValueIds(originAttr.id, { [selected.label]: selected.id });
   }
 
+  function applyPrefilledAttributeValues(
+    values: Array<{ attribute_id: number; value_text: string; dictionary_value_id?: number }>,
+  ) {
+    for (const v of values) {
+      const attrKey = String(v.attribute_id);
+      if (text(dynamicValues[attrKey])) continue; // don't overwrite user edits
+      updateDynamicValue(v.attribute_id, v.value_text);
+      if (v.dictionary_value_id) {
+        updateDictionaryValueIds(v.attribute_id, { [v.value_text]: v.dictionary_value_id });
+      }
+    }
+  }
+
   async function applyAttributeSuggestions(
     suggestions: Array<{ attribute_id: number; value_text: string; dictionary_query?: string }>,
     attrs: OzonCategoryAttribute[],
@@ -1258,19 +1271,17 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onTo
     setAttributeAiFilledKey(attributeAutoFillKey);
     setAttributeAiFilling(true);
 
-    // Pre-filled by the draft generation pipeline — apply immediately
-    const prefill = task.draft?.generated &&
+    // Pre-filled by the draft generation backend — apply immediately
+    const prefillValues = task.draft?.generated &&
       typeof task.draft.generated === 'object' &&
-      (task.draft.generated as Record<string, unknown>).attribute_suggestions;
-    const prefillAttrs = prefill && typeof prefill === 'object'
-      ? (prefill as { attributes?: Array<{ attribute_id: number; value_text: string; dictionary_query?: string }> }).attributes
-      : undefined;
+      (task.draft.generated as Record<string, unknown>).attribute_values;
+    const values = Array.isArray(prefillValues) ? prefillValues : [];
 
-    if (prefillAttrs && prefillAttrs.length && !forceFresh) {
-      setMessage('草稿已附带 AI 特征建议，正在匹配字典值...');
+    if (values.length && !forceFresh) {
+      setMessage('草稿已附带特征值，正在应用...');
       try {
         await applyDefaultOriginCountry(attrs);
-        await applyAttributeSuggestions(prefillAttrs, attrs);
+        applyPrefilledAttributeValues(values);
         setMessage('AI 已尝试填写类目特征，请检查字典项是否正确。');
       } catch (error) {
         setMessage(error instanceof Error ? error.message : String(error));

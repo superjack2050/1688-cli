@@ -1,6 +1,7 @@
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
+const { getCategoryAttributes, getCategoryAttributeValues } = require('./ozon-settings.cjs');
 
 const ATTR_MODEL_NAME = 9048;
 const ATTR_DESCRIPTION = 4191;
@@ -49,6 +50,9 @@ async function generateOzonDraft(settings, rows = []) {
   if (categoryContext.exactCategory) {
     normalized.matched_category = categoryContext.exactCategory;
   }
+
+  // Fill category attributes immediately — part of draft generation
+  await fillCategoryAttributes(settings, sourceRows, normalized);
 
   const items = sourceRows.map((row, index) => buildOzonItem(row, normalized, settings, index));
   const variant = buildVariantDraft(sourceRows, items, normalized);
@@ -713,6 +717,94 @@ function applyVariantMetadata(items, variant) {
       values: entry.values || {},
       mapping_status: variant.status,
     };
+  }
+}
+
+// ── Fill category attributes during draft generation ──
+
+async function fillCategoryAttributes(settings, sourceRows, normalized) {
+  try {
+    const category = normalized.matched_category;
+    if (!category || typeof category !== 'object') return;
+
+    const descId = Number(category.description_category_id || 0);
+    const typeId = Number(category.type_id || 0);
+    if (!descId || !typeId) return;
+
+    const userDataPath = cleanText(settings?.userDataPath || settings?.paths?.userDataPath || '');
+
+    // 1. Fetch category attributes from Ozon
+    const catAttrs = await getCategoryAttributes(userDataPath, {
+      descriptionCategoryId: descId,
+      typeId,
+      language: 'ZH_HANS',
+    });
+    const attrs = (catAttrs.attributes || []).filter((a) => !a.isAspect);
+    if (!attrs.length) return;
+
+    // 2. AI suggests attribute values
+    const messages = buildAttributeSuggestionMessages(sourceRows, attrs, {}, { descriptionCategoryId: descId, typeId, path: category.path || '' });
+    const suggestionData = await callAi(settings.ai, messages);
+    const suggestions = normalizeAttributeSuggestions(suggestionData, attrs);
+    const attrList = suggestions.attributes || [];
+
+    // 3. Resolve dictionary values to Chinese
+    const resolved = [];
+    for (const s of attrList) {
+      const attr = attrs.find((a) => Number(a.id) === Number(s.attribute_id));
+      if (!attr) continue;
+
+      if (attr.dictionaryId) {
+        const query = cleanText(s.dictionary_query || s.value_text || '');
+        if (query) {
+          try {
+            const searchResp = await getCategoryAttributeValues(userDataPath, {
+              descriptionCategoryId: descId,
+              typeId,
+              attributeId: attr.id,
+              limit: 20,
+              query,
+            });
+            const searchOptions = searchResp.values || [];
+            const ranked = (searchOptions || []).sort(() => 0);
+            // Get ZH_HANS display values for matched IDs
+            const zhResp = await getCategoryAttributeValues(userDataPath, {
+              descriptionCategoryId: descId,
+              typeId,
+              attributeId: attr.id,
+              language: 'ZH_HANS',
+              limit: 2000,
+            });
+            const zhOptions = zhResp.values || [];
+            const matched = searchOptions[0];
+            if (matched) {
+              const zhMatch = zhOptions.find((v) => v.id === matched.id);
+              resolved.push({
+                attribute_id: attr.id,
+                value_text: zhMatch ? cleanText(zhMatch.value) : cleanText(matched.value),
+                dictionary_value_id: matched.id,
+                confidence: s.confidence || 0,
+              });
+            }
+          } catch {
+            // Skip if dictionary resolution fails
+          }
+        }
+      } else {
+        const text = cleanText(s.value_text);
+        if (text) {
+          resolved.push({
+            attribute_id: attr.id,
+            value_text: text,
+            confidence: s.confidence || 0,
+          });
+        }
+      }
+    }
+
+    normalized.attribute_values = resolved;
+  } catch {
+    // Attribute filling failure does not block draft generation
   }
 }
 

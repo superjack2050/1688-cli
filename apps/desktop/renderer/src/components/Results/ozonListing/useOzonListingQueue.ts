@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react';
-import type { getApi, OzonDraft } from '../../../services/api';
+import type { getApi } from '../../../services/api';
 import { progressCardToOzonRows } from '../../../services/ozon-source-adapter';
 import { normalizeOzonTaskError } from '../../Ozon/ozonError';
 import type { ProgressOfferCardItem } from '../ProgressOfferCard';
@@ -333,43 +333,6 @@ export function useOzonListingQueue({
     return null;
   }
 
-  async function fillDraftAttributes(entry: OzonListingQueueEntry, draft: OzonDraft, rows: Array<Record<string, unknown>>): Promise<void> {
-    try {
-      const generated = (draft.generated || {}) as Record<string, unknown>;
-      const category = (generated.matched_category || {}) as Record<string, unknown>;
-      const descId = Number(category.description_category_id || 0);
-      const typeId = Number(category.type_id || 0);
-      if (!descId || !typeId) return;
-
-      const catAttrs = await api.ozon.getCategoryAttributes({
-        descriptionCategoryId: descId,
-        typeId,
-        language: 'ZH_HANS',
-      });
-      const attrs = (catAttrs.attributes || []).filter((a) => !a.isAspect);
-
-      if (!attrs.length) return;
-
-      const suggestions = await api.ozon.generateAttributeSuggestions({
-        sourceRows: rows,
-        categoryAttributes: attrs,
-        form: {},
-        category: { descriptionCategoryId: descId, typeId, path: String(category.path || '') },
-      });
-
-      generated.attribute_suggestions = suggestions;
-      ozonListingLog('fillDraftAttributes done', {
-        draftId: draft.draftId,
-        suggestionCount: suggestions.attributes?.length || 0,
-      });
-
-      // Republish so consumers (OzonDraftEditor) see the updated draft
-      upsertOzonTask(entry.key, { updatedAt: new Date().toISOString() });
-    } catch (err) {
-      ozonListingLog('fillDraftAttributes failed', { error: errorMessageOf(err) });
-    }
-  }
-
   async function generateDraftForEntry(entry: OzonListingQueueEntry): Promise<void> {
     const deepItem = await ensureDeepCollected(entry);
 
@@ -395,9 +358,6 @@ export function useOzonListingQueue({
       });
 
       const draft = await api.ozon.generateDraft(rows);
-
-      // Start AI attribute fill in background — republishes task on completion
-      fillDraftAttributes(entry, draft, rows);
 
       upsertOzonTask(entry.key, {
         status: 'draft_ready',
