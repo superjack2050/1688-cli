@@ -166,6 +166,10 @@ function normalizeAttributesForOzonImport(attributes, metaById) {
     const id = Number(attr.id || attr.attribute_id || 0);
     if (!id) continue;
 
+    // Hashtag attributes (23171/22508) cause repeated Ozon audit warnings
+    // about "advertising/promotional" content. Drop them from the import payload.
+    if (KNOWN_HASHTAG_ATTR_IDS.has(id)) continue;
+
     const meta = metaById[id] || {};
     const complexId = Number(attr.complex_id || attr.complexId || meta.attributeComplexId || 0) || 0;
     const key = `${id}:${complexId}`;
@@ -954,7 +958,8 @@ function buildOzonItem(row, generated, settings, index) {
   const attrs = [];
   addAttribute(attrs, ATTR_MODEL_NAME, generated.model_name || generated.title_ru);
   addAttribute(attrs, ATTR_DESCRIPTION, generated.description_ru);
-  addAttribute(attrs, ATTR_TAGS, normalizeHashtagList(generated.tags));
+  // hashtag attributes (23171/22508) are no longer submitted to Ozon —
+  // they cause repeated "advertising/promotional" audit warnings.
   // Merge backend-generated category attributes into item.attributes
   addGeneratedCategoryAttributes(attrs, generated);
   return {
