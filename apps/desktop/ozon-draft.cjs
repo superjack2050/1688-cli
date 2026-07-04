@@ -83,6 +83,191 @@ async function generateOzonDraft(settings, rows = []) {
   };
 }
 
+// ── Ozon Import Attribute Normalization ──
+
+async function prepareOzonImportItems(settings, items) {
+  const metaByCategory = await loadAttributeMetaByCategory(settings, items);
+
+  return items.map((item) => {
+    const importItem = toOzonImportItem(item);
+    const key = `${Number(importItem.description_category_id || 0)}:${Number(importItem.type_id || 0)}`;
+    const metaById = metaByCategory[key] || {};
+
+    importItem.attributes = normalizeAttributesForOzonImport(importItem.attributes, metaById);
+
+    importItem.name = cleanText(importItem.name).slice(0, 500);
+    importItem.offer_id = cleanText(importItem.offer_id);
+    importItem.price = String(Math.max(positiveNumber(importItem.price), 1));
+    importItem.old_price = String(importItem.old_price || '0');
+    importItem.vat = String(importItem.vat || '0');
+    importItem.images = uniqueStrings(Array.isArray(importItem.images) ? importItem.images : []);
+    importItem.primary_image = cleanText(importItem.primary_image || importItem.images[0] || '');
+
+    return importItem;
+  });
+}
+
+async function loadAttributeMetaByCategory(settings, items) {
+  const result = {};
+  const keys = uniqueStrings(items.map((item) => {
+    const desc = Number(item.description_category_id || 0);
+    const type = Number(item.type_id || 0);
+    return desc && type ? `${desc}:${type}` : '';
+  }));
+
+  for (const key of keys) {
+    const [descriptionCategoryId, typeId] = key.split(':').map(Number);
+    try {
+      const data = await callOzonSellerApi(settings.ozon, '/v1/description-category/attribute', {
+        description_category_id: descriptionCategoryId,
+        type_id: typeId,
+        language: 'ZH_HANS',
+      });
+      const attrs = normalizeCategoryAttributesForImport(data);
+      result[key] = Object.fromEntries(attrs.map((attr) => [Number(attr.id), attr]));
+    } catch { /* best-effort */ }
+  }
+
+  return result;
+}
+
+function normalizeCategoryAttributesForImport(data) {
+  const raw = Array.isArray(data?.result) ? data.result
+    : Array.isArray(data?.attributes) ? data.attributes
+      : Array.isArray(data?.result?.attributes) ? data.result.attributes
+        : [];
+  return raw.map((attr) => ({
+    id: Number(attr?.id || attr?.attribute_id || 0),
+    name: cleanText(attr?.name || attr?.attribute_name || ''),
+    dictionaryId: Number(attr?.dictionary_id || 0) || 0,
+    isRequired: attr?.is_required === true || attr?.required === true,
+    isCollection: attr?.is_collection === true,
+    maxValueCount: Number(attr?.max_value_count || 1) || 1,
+    attributeComplexId: Number(attr?.attribute_complex_id || 0) || 0,
+    type: cleanText(attr?.type || attr?.value_type || attr?.data_type || attr?.attribute_type || ''),
+  })).filter((attr) => attr.id > 0);
+}
+
+function normalizeAttributesForOzonImport(attributes, metaById) {
+  const grouped = new Map();
+
+  for (const raw of Array.isArray(attributes) ? attributes : []) {
+    const attr = raw && typeof raw === 'object' ? raw : {};
+    const id = Number(attr.id || attr.attribute_id || 0);
+    if (!id) continue;
+
+    const meta = metaById[id] || {};
+    const complexId = Number(attr.complex_id || attr.complexId || meta.attributeComplexId || 0) || 0;
+    const key = `${id}:${complexId}`;
+
+    const values = normalizeAttributeValuesForOzonImport(attr.values, meta, id);
+    if (!values.length) continue;
+
+    if (!grouped.has(key)) {
+      grouped.set(key, { id, complex_id: complexId, values: [] });
+    }
+    grouped.get(key).values.push(...values);
+  }
+
+  const result = [];
+  for (const attr of grouped.values()) {
+    const meta = metaById[attr.id] || {};
+    const values = dedupeAttributeValues(attr.values);
+    const maxCount = maxValueCountForImport(meta);
+    const finalValues = allowsMultipleValues(meta)
+      ? values.slice(0, maxCount)
+      : values.slice(0, 1);
+    if (!finalValues.length) continue;
+    result.push({ id: attr.id, complex_id: attr.complex_id || 0, values: finalValues });
+  }
+  return result;
+}
+
+function normalizeAttributeValuesForOzonImport(values, meta, attrId) {
+  const out = [];
+  for (const raw of Array.isArray(values) ? values : []) {
+    const valueObj = raw && typeof raw === 'object' ? raw : { value: raw };
+
+    if (Number(meta.dictionaryId || 0) > 0) {
+      const dictionaryValueId = Number(valueObj.dictionary_value_id || valueObj.dictionaryValueId || 0);
+      if (dictionaryValueId <= 0) continue; // dict attrs MUST have a real dict id
+      const entry = { dictionary_value_id: dictionaryValueId };
+      const v = cleanText(valueObj.value);
+      if (v) entry.value = v;
+      out.push(entry);
+      continue;
+    }
+
+    const v = normalizeNonDictionaryValueForOzonImport(valueObj.value, meta, attrId);
+    if (v === null || v === undefined || v === '') continue;
+    out.push({ value: v });
+  }
+  return out;
+}
+
+function isBooleanAttribute(meta) {
+  const raw = `${meta.type || ''} ${meta.name || ''}`.toLowerCase();
+  return /bool|boolean|true\/false|да\/нет|логичес|是否/.test(raw);
+}
+
+function normalizeBooleanValue(value) {
+  const raw = cleanText(value).toLowerCase();
+  if (['true', '1', 'yes', 'y', 'да', '是', '有', '支持'].includes(raw)) return true;
+  if (['false', '0', 'no', 'n', 'нет', '否', '无', '不', '不支持'].includes(raw)) return false;
+  return null;
+}
+
+function isHashtagAttribute(attrId, meta) {
+  const name = `${meta.name || ''}`.toLowerCase();
+  return Number(attrId) === ATTR_TAGS || /hashtag|хэштег|тег|标签/.test(name);
+}
+
+function normalizeHashtagString(value) {
+  const raw = cleanText(value);
+  if (!raw) return '';
+  const parts = raw.split(/[\n,，;；|]+/g).flatMap((p) => p.split(/\s+#/g)).map((s) => s.trim()).filter(Boolean);
+  const tags = [];
+  for (let item of parts) {
+    item = item.replace(/^#+/, '').trim();
+    if (!item) continue;
+    item = item.replace(/\s+/g, '_');
+    item = item.replace(/[^\p{L}\p{N}_-]+/gu, '');
+    if (!item) continue;
+    tags.push(`#${item}`);
+  }
+  return uniqueStrings(tags).slice(0, 20).join(' ');
+}
+
+function normalizeNonDictionaryValueForOzonImport(value, meta, attrId) {
+  if (isHashtagAttribute(attrId, meta)) return normalizeHashtagString(value);
+  if (isBooleanAttribute(meta)) return normalizeBooleanValue(value);
+  const text = cleanText(value);
+  return text || '';
+}
+
+function allowsMultipleValues(meta) {
+  if (meta.isCollection === true) return true;
+  if (Number(meta.maxValueCount || 1) > 1) return true;
+  return false;
+}
+
+function maxValueCountForImport(meta) {
+  const v = Number(meta.maxValueCount || 1);
+  return Number.isFinite(v) && v > 0 ? Math.min(v, 50) : 1;
+}
+
+function dedupeAttributeValues(values) {
+  const seen = new Set();
+  const out = [];
+  for (const v of values) {
+    const key = v.dictionary_value_id ? `dict:${v.dictionary_value_id}` : `value:${JSON.stringify(v.value)}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(v);
+  }
+  return out;
+}
+
 async function submitOzonDraft(settings, draft, options = {}) {
   if (!settings?.ozon?.clientId || !settings?.ozon?.apiKey) {
     throw new Error('Ozon Client-Id 或 API-Key 未配置。');
@@ -92,9 +277,18 @@ async function submitOzonDraft(settings, draft, options = {}) {
   const missing = collectDraftMissing(items, draft);
   if (missing.length) throw new Error(`草稿缺少必填项：${missing.join('、')}`);
 
-  await validateRequiredCategoryAttributes(settings, items);
+  // Prepare & normalize attributes for Ozon API rules
+  const importItems = await prepareOzonImportItems(settings, items);
 
-  const importItems = items.map((item) => toOzonImportItem(item));
+  await validateRequiredCategoryAttributes(settings, importItems);
+
+  const attrStats = importItems.map((item) => ({
+    offer_id: item.offer_id,
+    attrCount: Array.isArray(item.attributes) ? item.attributes.length : 0,
+    attrIds: Array.isArray(item.attributes) ? item.attributes.map((a) => a.id) : [],
+  }));
+  process.stderr.write(`[ozon-submit] prepared import items ${JSON.stringify(attrStats)}\n`);
+
   const importData = await callOzonSellerApi(settings.ozon, '/v3/product/import', { items: importItems });
   const taskId = extractImportTaskId(importData);
   if (!taskId) {
@@ -285,22 +479,31 @@ function extractImportInfoItems(data) {
 function collectImportErrors(data, items = extractImportInfoItems(data)) {
   const errors = [];
   for (const item of items) {
+    const offerId = cleanText(item?.offer_id || item?.offerId || '');
     const status = String(item?.status || item?.state || '').toLowerCase();
     const rawErrors = Array.isArray(item?.errors) ? item.errors : [];
     if (/fail|error|declin|reject/.test(status) && rawErrors.length === 0) {
-      errors.push(`${item?.offer_id || item?.offerId || '商品'}: ${item?.status || item?.state}`);
+      errors.push([offerId, item?.status || item?.state].filter(Boolean).join(' | '));
     }
     for (const raw of rawErrors) {
-      if (typeof raw === 'string') errors.push(raw);
-      else if (raw && typeof raw === 'object') errors.push(String(raw.message || raw.error || raw.code || JSON.stringify(raw)));
+      errors.push(formatImportError(raw, offerId));
     }
   }
   const rootErrors = Array.isArray(data?.result?.errors) ? data.result.errors : Array.isArray(data?.errors) ? data.errors : [];
   for (const raw of rootErrors) {
-    if (typeof raw === 'string') errors.push(raw);
-    else if (raw && typeof raw === 'object') errors.push(String(raw.message || raw.error || raw.code || JSON.stringify(raw)));
+    errors.push(formatImportError(raw, ''));
   }
   return uniqueStrings(errors);
+}
+
+function formatImportError(raw, offerId) {
+  if (typeof raw === 'string') return [offerId, raw].filter(Boolean).join(' | ');
+  if (raw && typeof raw === 'object') {
+    const parts = [offerId, raw.attribute_id || raw.attributeId || raw.field || raw.name || raw.code || '',
+      raw.message || raw.error || JSON.stringify(raw)];
+    return parts.filter(Boolean).join(' | ');
+  }
+  return String(raw);
 }
 
 async function updateImportPrices(ozon, items) {
