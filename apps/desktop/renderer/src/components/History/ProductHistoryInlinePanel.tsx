@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import OfferDetailModal from '../Results/OfferDetailModal';
 import { ProgressOfferCardItem } from '../Results/ProgressOfferCard';
+import type { OzonListingTask } from '../Results/ozonListing/types';
 
 interface ProductItem {
   offerId: string;
@@ -14,22 +15,78 @@ interface ProductItem {
 
 interface Props {
   items: ProductItem[];
+  ozonTasks?: OzonListingTask[];
   onRefresh?: () => void;
 }
 
+function textOf(value: unknown): string {
+  if (value == null) return '';
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number') return String(value);
+  if (typeof value === 'object') {
+    const obj = value as Record<string, unknown>;
+    if (typeof obj.text === 'string') return obj.text;
+    if (obj.min != null && obj.max != null && obj.min !== obj.max) return `¥${obj.min}-${obj.max}`;
+    if (obj.min != null) return `¥${obj.min}`;
+    if (obj.price != null) return textOf(obj.price);
+    if (obj.value != null) return textOf(obj.value);
+  }
+  return '';
+}
+
+function hasDeepCollectData(item: ProductItem): boolean {
+  const raw = item.raw && typeof item.raw === 'object' ? item.raw as Record<string, unknown> : {};
+  if (raw.deepCollected === true) return true;
+  if (raw.deepCollectStatus === 'success') return true;
+  if (raw.deepOffer && typeof raw.deepOffer === 'object') return true;
+  const deep = raw.deep && typeof raw.deep === 'object' ? raw.deep as Record<string, unknown> : null;
+  if (deep) return true;
+  if (Array.isArray(raw.skus) && raw.skus.length > 0) return true;
+  if (Array.isArray(raw.attributes) && raw.attributes.length > 0) return true;
+  if (raw.supplier && typeof raw.supplier === 'object') return true;
+  if (raw.freight && typeof raw.freight === 'object') return true;
+  return false;
+}
+
+function isGeneratedStatus(status: string): boolean {
+  return ['draft_ready', 'needs_manual', 'import_pending', 'imported', 'listing_ready', 'submit_failed'].includes(status);
+}
+
+function hasGeneratedDraft(item: ProductItem, ozonTasks: OzonListingTask[] = []): boolean {
+  const offerId = textOf(item.offerId);
+  if (!offerId) return false;
+  return ozonTasks.some((task) => {
+    if (task.offerId !== offerId) return false;
+    return isGeneratedStatus(task.status);
+  });
+}
+
+function deepRawOf(item: ProductItem): Record<string, unknown> {
+  const raw = item.raw && typeof item.raw === 'object' ? item.raw as Record<string, unknown> : {};
+  if (raw.deepOffer && typeof raw.deepOffer === 'object') {
+    return { ...raw, ...(raw.deepOffer as Record<string, unknown>), deepCollected: true, deepCollectStatus: 'success' };
+  }
+  if (raw.deep && typeof raw.deep === 'object') {
+    return { ...raw, ...(raw.deep as Record<string, unknown>), deepCollected: true, deepCollectStatus: 'success' };
+  }
+  return raw;
+}
+
 function toOfferCardItem(p: ProductItem): ProgressOfferCardItem {
+  const raw = deepRawOf(p);
+  const deepReady = hasDeepCollectData(p);
   return {
     slotIndex: 0,
-    offerId: p.offerId,
-    title: p.title || '',
-    price: p.price || '',
-    image: p.image,
-    status: 'basic-ready',
-    raw: p.raw || p,
+    offerId: textOf(p.offerId),
+    title: textOf(raw.title) || textOf(p.title),
+    price: textOf(raw.priceText) || textOf(raw.priceRange) || textOf(p.price),
+    image: textOf(raw.mainImage) || textOf(p.image),
+    status: deepReady ? 'deep-success' : 'basic-ready',
+    raw: { ...p, ...raw, offerId: textOf(p.offerId), url: textOf(raw.url) || textOf(p.url) },
   };
 }
 
-export default function ProductHistoryInlinePanel({ items, onRefresh }: Props) {
+export default function ProductHistoryInlinePanel({ items, ozonTasks, onRefresh }: Props) {
   const [selected, setSelected] = useState<ProductItem | null>(null);
 
   return (
@@ -52,28 +109,43 @@ export default function ProductHistoryInlinePanel({ items, onRefresh }: Props) {
         </div>
       ) : (
         <div className="product-history-inline-grid">
-          {items.map((item) => (
-            <button
-              key={`${item.offerId}-${item.collectedAt}`}
-              type="button"
-              className="product-history-inline-card"
-              onClick={() => setSelected(item)}
-              title={item.title}
-            >
-              <div className="product-history-inline-thumb">
-                {item.image ? (
-                  <img src={item.image} alt={item.title || ''} loading="lazy" />
-                ) : (
-                  <div className="product-history-inline-placeholder" />
-                )}
-              </div>
-              <div className="product-history-inline-info">
-                <strong>{item.title || item.offerId || '未命名商品'}</strong>
-                <span>{item.price || '暂无价格'}</span>
-                <small>{item.offerId}</small>
-              </div>
-            </button>
-          ))}
+          {items.map((item) => {
+            const deepReady = hasDeepCollectData(item);
+            const generatedReady = hasGeneratedDraft(item, ozonTasks);
+            const priceText = textOf(item.price);
+            const offerId = textOf(item.offerId);
+            const title = textOf(item.title) || offerId || '未命名商品';
+            return (
+              <button
+                key={`${offerId}-${item.collectedAt}`}
+                type="button"
+                className="product-history-inline-card"
+                onClick={() => setSelected(item)}
+                title={title}
+              >
+                <div className="product-history-inline-thumb">
+                  {item.image ? (
+                    <img src={item.image} alt={title} loading="lazy" />
+                  ) : (
+                    <div className="product-history-inline-placeholder" />
+                  )}
+                </div>
+                <div className="product-history-inline-info">
+                  <strong>{title}</strong>
+                  {priceText && <span>{priceText}</span>}
+                  <div className="product-history-inline-status-row">
+                    <span className={`history-status-pill ${deepReady ? 'success' : 'muted'}`}>
+                      {deepReady ? '已深采' : '未深采'}
+                    </span>
+                    <span className={`history-status-pill ${generatedReady ? 'success' : 'muted'}`}>
+                      {generatedReady ? '已生成' : '未生成'}
+                    </span>
+                  </div>
+                  <small className="product-history-inline-id">{offerId}</small>
+                </div>
+              </button>
+            );
+          })}
         </div>
       )}
 

@@ -463,6 +463,7 @@ export default function App() {
               />
               <ProductHistoryInlinePanel
                 items={productItems}
+                ozonTasks={ozonTasks}
                 onRefresh={refreshProductHistory}
               />
             </ErrorBoundary>

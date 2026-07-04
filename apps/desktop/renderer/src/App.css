@@ -740,6 +740,24 @@ select {
 .product-history-inline-info small {
   font-size: 11px; color: var(--text-tertiary);
 }
+.product-history-inline-status-row {
+  display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 4px;
+}
+.history-status-pill {
+  display: inline-flex; align-items: center; justify-content: center;
+  height: 22px; padding: 0 8px; border-radius: 999px;
+  font-size: 11px; font-weight: 800; line-height: 1;
+}
+.history-status-pill.success {
+  color: #047857; background: rgba(16, 185, 129, 0.12); border: 1px solid rgba(16, 185, 129, 0.22);
+}
+.history-status-pill.muted {
+  color: #64748b; background: rgba(148, 163, 184, 0.12); border: 1px solid rgba(148, 163, 184, 0.22);
+}
+.product-history-inline-id {
+  margin-top: 4px; font-size: 11px; color: var(--text-tertiary);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 .product-history-inline-empty {
   padding: 32px 16px; border: 1px dashed rgba(148, 163, 184, 0.32);
   border-radius: 18px; color: var(--text-secondary); text-align: center;
