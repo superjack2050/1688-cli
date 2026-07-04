@@ -885,10 +885,10 @@ function buildOzonItem(row, generated, settings, index) {
     barcode: '',
     images,
     primary_image: images[0] || '',
-    dimension_unit: 'cm',
-    depth: numberForOzon(depth),
-    width: numberForOzon(width),
-    height: numberForOzon(height),
+    dimension_unit: 'mm',
+    depth: numberForOzon(depth) * 10 || 0,
+    width: numberForOzon(width) * 10 || 0,
+    height: numberForOzon(height) * 10 || 0,
     weight_unit: 'g',
     weight: numberForOzon(weight),
     attributes: attrs,
@@ -1164,8 +1164,18 @@ async function applyBackendDefaultsToItems(settings, userDataPath, descId, typeI
       if (attrs.some((a) => Number(a.id) === 85 && Array.isArray(a.values) && a.values.length > 0)) hasBrand = true;
     }
     if (!hasBrand) {
-      // Brand is a strict dictionary attribute — only write if we can resolve a real dictionary_value_id.
-      // "无品牌" as free text is rejected by Ozon validation for most categories.
+      // Brand is a strict dictionary attribute — must use real dictionary_value_id.
+      // "Нет бренда" (no brand) is the Ozon-recognized value for unbranded products.
+      const resolved = await resolveSingleDictionaryValue(settings, userDataPath, descId, typeId, brandAttr, 'Нет бренда');
+      if (resolved && resolved.dictionary_value_id > 0) {
+        for (const item of items) {
+          if (!item || typeof item !== 'object') continue;
+          const attrs = Array.isArray(item.attributes) ? item.attributes : [];
+          attrs.push(buildSingleAttributeEntry(85, 'Нет бренда', resolved.dictionary_value_id));
+          item.attributes = attrs;
+        }
+      }
+      // If "Нет бренда" is not found, leave brand empty — Ozon validation will flag it.
     }
   }
 }
