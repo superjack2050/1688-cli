@@ -236,6 +236,7 @@ export default function ResultRenderer({ record, resultType, placeholderCards, r
     enqueueSingleDeepCollect,
     onOzonTasksChange: hasRecordSession ? onOzonTasksChange : undefined,
     showToast,
+    activeProfile,
   });
 
   const handleBatchDeepCollect = () => {

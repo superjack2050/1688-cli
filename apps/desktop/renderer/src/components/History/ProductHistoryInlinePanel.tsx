@@ -26,6 +26,9 @@ function textOf(value: unknown): string {
   if (typeof value === 'object') {
     const obj = value as Record<string, unknown>;
     if (typeof obj.text === 'string') return obj.text;
+    if (typeof obj.label === 'string') return obj.label;
+    if (typeof obj.name === 'string') return obj.name;
+    if (typeof obj.title === 'string') return obj.title;
     if (obj.min != null && obj.max != null && obj.min !== obj.max) return `¥${obj.min}-${obj.max}`;
     if (obj.min != null) return `¥${obj.min}`;
     if (obj.price != null) return textOf(obj.price);
@@ -38,22 +41,33 @@ function hasDeepCollectData(item: ProductItem): boolean {
   const raw = item.raw && typeof item.raw === 'object' ? item.raw as Record<string, unknown> : {};
   if (raw.deepCollected === true) return true;
   if (raw.deepCollectStatus === 'success') return true;
+  if (raw.status === 'deep-success') return true;
   if (raw.deepOffer && typeof raw.deepOffer === 'object') return true;
-  const deep = raw.deep && typeof raw.deep === 'object' ? raw.deep as Record<string, unknown> : null;
-  if (deep) return true;
+  if (raw.deep && typeof raw.deep === 'object') return true;
   if (Array.isArray(raw.skus) && raw.skus.length > 0) return true;
   if (Array.isArray(raw.attributes) && raw.attributes.length > 0) return true;
-  if (raw.supplier && typeof raw.supplier === 'object') return true;
-  if (raw.freight && typeof raw.freight === 'object') return true;
+  if (Array.isArray(raw.priceTiers) && raw.priceTiers.length > 0) return true;
+  if (raw.saledCount != null) return true;
+  if (raw.freight && typeof raw.freight === 'object') {
+    const f = raw.freight as Record<string, unknown>;
+    if (f.receiveAddress || f.unitWeight || f.province || f.city) return true;
+  }
   return false;
 }
 
 function isGeneratedStatus(status: string): boolean {
-  return ['draft_ready', 'needs_manual', 'import_pending', 'imported', 'listing_ready', 'submit_failed'].includes(status);
+  return ['generating_draft', 'draft_ready', 'needs_manual', 'import_pending', 'imported', 'listing_ready', 'submit_failed'].includes(status);
 }
 
 function hasGeneratedDraft(item: ProductItem, ozonTasks: OzonListingTask[] = []): boolean {
   const offerId = textOf(item.offerId);
+  const raw = item.raw && typeof item.raw === 'object' ? item.raw as Record<string, unknown> : {};
+
+  // Check productHistory persisted flags first
+  if (raw.ozonDraftGenerated === true) return true;
+  if (raw.draftGenerated === true) return true;
+  if (raw.ozonDraftId || raw.draftId) return true;
+
   if (!offerId) return false;
   return ozonTasks.some((task) => {
     if (task.offerId !== offerId) return false;

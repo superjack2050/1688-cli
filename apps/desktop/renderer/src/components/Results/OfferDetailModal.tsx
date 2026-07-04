@@ -53,7 +53,14 @@ export default function OfferDetailModal({ item, onClose }: Props) {
   const freight = raw?.freight as Record<string, unknown> | undefined;
   const saledCount = raw?.saledCount as number | undefined;
   const priceTiers = (raw?.priceTiers as Array<Record<string, unknown>>) || [];
-  const isDeep = skus.length > 0 || attrs.length > 0 || !!supplier;
+  const isDeep =
+    skus.length > 0 ||
+    attrs.length > 0 ||
+    priceTiers.length > 0 ||
+    saledCount != null ||
+    Boolean(freight?.receiveAddress || freight?.unitWeight || freight?.province || freight?.city) ||
+    raw?.deepCollected === true ||
+    raw?.deepCollectStatus === 'success';
 
   // Base search fields (from search offers)
   const baseSupplier = raw?.supplier as Record<string, unknown> | undefined;

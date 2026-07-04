@@ -19,15 +19,52 @@ interface Props {
   onClose: () => void;
 }
 
+function textOf(value: unknown): string {
+  if (value == null) return '';
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number') return String(value);
+  if (typeof value === 'object') {
+    const obj = value as Record<string, unknown>;
+    if (typeof obj.text === 'string') return obj.text;
+    if (typeof obj.label === 'string') return obj.label;
+    if (typeof obj.name === 'string') return obj.name;
+    if (typeof obj.title === 'string') return obj.title;
+    if (obj.min != null && obj.max != null && obj.min !== obj.max) return `¥${obj.min}-${obj.max}`;
+    if (obj.min != null) return `¥${obj.min}`;
+    if (obj.price != null) return textOf(obj.price);
+    if (obj.value != null) return textOf(obj.value);
+  }
+  return '';
+}
+
+function deepRawOf(item: ProductItem): Record<string, unknown> {
+  const raw = item.raw && typeof item.raw === 'object' ? item.raw as Record<string, unknown> : {};
+  if (raw.deepOffer && typeof raw.deepOffer === 'object') {
+    return { ...raw, ...(raw.deepOffer as Record<string, unknown>), deepCollected: true, deepCollectStatus: 'success' };
+  }
+  if (raw.deep && typeof raw.deep === 'object') {
+    return { ...raw, ...(raw.deep as Record<string, unknown>), deepCollected: true, deepCollectStatus: 'success' };
+  }
+  return raw;
+}
+
 function toOfferCardItem(p: ProductItem): ProgressOfferCardItem {
+  const raw = deepRawOf(p);
+  const hasDeep =
+    Array.isArray(raw.skus) && raw.skus.length > 0 ||
+    Array.isArray(raw.attributes) && raw.attributes.length > 0 ||
+    Array.isArray(raw.priceTiers) && raw.priceTiers.length > 0 ||
+    raw.saledCount != null ||
+    raw.deepCollected === true ||
+    raw.deepCollectStatus === 'success';
   return {
     slotIndex: 0,
-    offerId: p.offerId,
-    title: p.title || '',
-    price: p.price || '',
-    image: p.image,
-    status: 'basic-ready',
-    raw: p.raw || p,
+    offerId: textOf(p.offerId),
+    title: textOf(raw.title) || textOf(raw.productTitle) || textOf(p.title),
+    price: textOf(raw.priceText) || textOf(raw.priceRange) || textOf(p.price),
+    image: textOf(raw.mainImage) || textOf(raw.image) || textOf(p.image),
+    status: hasDeep ? 'deep-success' : 'basic-ready',
+    raw: { ...p, ...raw, offerId: textOf(p.offerId), url: textOf(raw.url) || textOf(p.url) },
   };
 }
 

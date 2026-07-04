@@ -258,6 +258,15 @@ export default function App() {
     setProductItems(items);
   };
 
+  const refresh1688HistoryData = async () => {
+    const [recentItems, products] = await Promise.all([
+      api.commands.getHistory({ limit: 8 }),
+      api.productHistory.list(500),
+    ]);
+    setHistory(recentItems);
+    setProductItems(products);
+  };
+
   const openHistory = async () => {
     const items = await api.commands.getHistory({ limit: 50 });
     setHistory(items);
@@ -457,7 +466,7 @@ export default function App() {
                 registry={registry}
                 activeProfile={activeProfile}
                 accounts={accounts}
-                onHistoryRefresh={refreshRecentTasks}
+                onHistoryRefresh={refresh1688HistoryData}
                 onDeepTasksChange={handleDeepTasksChange}
                 onOzonTasksChange={handleOzonTasksChange}
               />

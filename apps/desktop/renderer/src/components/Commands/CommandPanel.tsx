@@ -633,6 +633,22 @@ export default function CommandPanel({ registry, activeProfile, accounts, onHist
         },
       };
     });
+
+    // Write deep collect result back to productHistory for persistence
+    if (patch.deep && patch.offerId) {
+      const deep = patch.deep as Record<string, unknown>;
+      api.productHistory.add([{
+        ...deep,
+        offerId: patch.offerId,
+        title: deep.title || deep.productTitle,
+        image: deep.mainImage || deep.image,
+        price: deep.priceText || deep.priceRange,
+        url: deep.url,
+        deepCollected: true,
+        deepCollectStatus: 'success',
+        deepOffer: deep,
+      }], { sourceCommand: 'deepCollect', profile: activeProfile }).catch(() => {});
+    }
   };
 
   const selectCommand = (id: string) => {

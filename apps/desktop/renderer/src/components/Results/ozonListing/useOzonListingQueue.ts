@@ -24,6 +24,7 @@ type UseOzonListingQueueArgs = {
   enqueueSingleDeepCollect: (item: ProgressOfferCardItem) => void;
   onOzonTasksChange?: OzonListingTasksChangeHandler;
   showToast: (message: string, timeout?: number) => void;
+  activeProfile?: string;
 };
 
 type DeepWaitResult =
@@ -158,6 +159,7 @@ export function useOzonListingQueue({
   enqueueSingleDeepCollect,
   onOzonTasksChange,
   showToast,
+  activeProfile,
 }: UseOzonListingQueueArgs) {
   const sessionRef = useRef<OzonListingSession>(getOzonListingSession(sessionKey));
   if (sessionRef.current.key !== sessionKey) {
@@ -383,6 +385,23 @@ export function useOzonListingQueue({
         debug: { attrStats },
         finishedAt: new Date().toISOString(),
       });
+
+      // Write generation status back to productHistory for persistence
+      api.productHistory.add([{
+        offerId: deepItem.offerId,
+        title: deepItem.title,
+        image: deepItem.image,
+        price: deepItem.price,
+        url: sourceUrlOf(deepItem),
+        ozonDraftGenerated: true,
+        draftGenerated: true,
+        ozonDraftId: draft.draftId || '',
+        draftStatus: hasMissing ? 'needs_manual' : 'draft_ready',
+        draftUpdatedAt: new Date().toISOString(),
+      }], {
+        sourceCommand: 'ozonDraftGenerated',
+        profile: activeProfile || 'default',
+      }).catch(() => {});
 
       ozonListingLog('generateDraft done', {
         offerId: deepItem.offerId,
