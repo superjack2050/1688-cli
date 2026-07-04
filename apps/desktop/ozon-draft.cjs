@@ -145,6 +145,9 @@ function normalizeCategoryAttributesForImport(data) {
     maxValueCount: Number(attr?.max_value_count || 1) || 1,
     attributeComplexId: Number(attr?.attribute_complex_id || 0) || 0,
     type: cleanText(attr?.type || attr?.value_type || attr?.data_type || attr?.attribute_type || ''),
+    maxValue: Number(attr?.max_value || attr?.max || 0) || null,
+    minValue: Number(attr?.min_value || attr?.min || 0) || null,
+    unit: cleanText(attr?.unit || attr?.measure_unit || ''),
   })).filter((attr) => attr.id > 0);
 }
 
@@ -200,6 +203,8 @@ function normalizeAttributeValuesForOzonImport(values, meta, attrId) {
 
     const v = normalizeNonDictionaryValueForOzonImport(valueObj.value, meta, attrId);
     if (v === null || v === undefined || v === '') continue;
+    // Final guard: hashtag must be valid, unsafe numeric optional attrs dropped
+    if (isHashtagAttribute(attrId, meta) && !isValidOzonHashtagValue(v)) continue;
     out.push({ value: v });
   }
   return out;
@@ -217,30 +222,114 @@ function normalizeBooleanValue(value) {
   return null;
 }
 
+// ── Hashtag normalization ──
+
+const MAX_OZON_HASHTAG_LENGTH = 30;
+const MAX_OZON_HASHTAG_COUNT = 20;
+
 function isHashtagAttribute(attrId, meta) {
   const name = `${meta.name || ''}`.toLowerCase();
   return Number(attrId) === ATTR_TAGS || /hashtag|хэштег|тег|标签/.test(name);
 }
 
-function normalizeHashtagString(value) {
-  const raw = cleanText(value);
-  if (!raw) return '';
-  const parts = raw.split(/[\n,，;；|]+/g).flatMap((p) => p.split(/\s+#/g)).map((s) => s.trim()).filter(Boolean);
-  const tags = [];
-  for (let item of parts) {
-    item = item.replace(/^#+/, '').trim();
-    if (!item) continue;
-    item = item.replace(/\s+/g, '_');
-    item = item.replace(/[^\p{L}\p{N}_-]+/gu, '');
-    if (!item) continue;
-    tags.push(`#${item}`);
+function sanitizeHashtagCore(value) {
+  return String(value || '').replace(/^#+/, '').trim()
+    .replace(/\s+/g, '_').replace(/[^\p{L}\p{N}_-]+/gu, '').replace(/[_-]+$/g, '');
+}
+
+function normalizeSingleHashtag(value) {
+  let core = sanitizeHashtagCore(value);
+  if (!core) return '';
+  if (core.length + 1 > MAX_OZON_HASHTAG_LENGTH) {
+    core = core.slice(0, MAX_OZON_HASHTAG_LENGTH - 1).replace(/[_-]+$/g, '');
   }
-  return uniqueStrings(tags).slice(0, 20).join(' ');
+  return core ? `#${core}` : '';
+}
+
+function splitLongUnderscoreHashtag(value) {
+  const words = String(value || '').replace(/^#+/, '').split(/_+/g).map((s) => s.trim()).filter(Boolean);
+  return buildShortHashtagPhrases(words);
+}
+
+function splitLongPhraseToHashtags(value) {
+  const words = String(value || '').replace(/^#+/, '').split(/\s+/g).map((s) => s.trim()).filter(Boolean);
+  return buildShortHashtagPhrases(words);
+}
+
+function buildShortHashtagPhrases(words) {
+  const out = []; let cur = '';
+  for (const word of words) {
+    const cw = sanitizeHashtagCore(word);
+    if (!cw) continue;
+    const next = cur ? `${cur}_${cw}` : cw;
+    if (next.length + 1 <= MAX_OZON_HASHTAG_LENGTH) { cur = next; continue; }
+    if (cur) out.push(cur);
+    cur = cw.length + 1 <= MAX_OZON_HASHTAG_LENGTH ? cw : cw.slice(0, MAX_OZON_HASHTAG_LENGTH - 1).replace(/[_-]+$/g, '');
+  }
+  if (cur) out.push(cur);
+  return out;
+}
+
+function splitHashtagSource(value) {
+  const raw = cleanText(value);
+  if (!raw) return [];
+  if (raw.includes('#')) {
+    return raw.split(/(?=#)/g).map((s) => s.replace(/^#+/, '').trim()).filter(Boolean);
+  }
+  const basic = raw.split(/[\n,，;；|]+/g).map((s) => s.trim()).filter(Boolean);
+  const out = [];
+  for (const part of basic) {
+    if (part.includes('_') && part.length > MAX_OZON_HASHTAG_LENGTH) { out.push(...splitLongUnderscoreHashtag(part)); continue; }
+    if (part.length > MAX_OZON_HASHTAG_LENGTH && /\s/.test(part)) { out.push(...splitLongPhraseToHashtags(part)); continue; }
+    out.push(part);
+  }
+  return out;
+}
+
+function normalizeHashtagList(tags) {
+  const list = Array.isArray(tags) ? tags : [tags];
+  const out = [];
+  for (const raw of list) {
+    for (const part of splitHashtagSource(raw)) {
+      const tag = normalizeSingleHashtag(part);
+      if (tag) out.push(tag);
+    }
+  }
+  return uniqueStrings(out).slice(0, MAX_OZON_HASHTAG_COUNT).join(' ');
+}
+
+function normalizeHashtagString(value) {
+  return normalizeHashtagList([value]);
+}
+
+function isValidOzonHashtagValue(value) {
+  const text = cleanText(value);
+  if (!text) return false;
+  const tags = text.split(/\s+/).filter(Boolean);
+  return tags.length > 0 && tags.every((t) => t.startsWith('#') && t.length <= MAX_OZON_HASHTAG_LENGTH && !/\s/.test(t));
+}
+
+// ── Dangerous optional numeric attribute filter ──
+
+const DANGEROUS_AI_NUMERIC_OPTIONAL_ATTR_IDS = new Set([8383]);
+
+function shouldDropUnsafeOptionalNumericAttribute(attrId, meta, value) {
+  const id = Number(attrId);
+  if (meta.isRequired === true) return false;
+  const raw = cleanText(value);
+  if (!raw) return false;
+  const number = Number(raw.replace(',', '.'));
+  if (!Number.isFinite(number)) return false;
+  if (DANGEROUS_AI_NUMERIC_OPTIONAL_ATTR_IDS.has(id)) return true;
+  if (number > 100000) return true;
+  if (meta.maxValue && number > meta.maxValue) return true;
+  return false;
 }
 
 function normalizeNonDictionaryValueForOzonImport(value, meta, attrId) {
   if (isHashtagAttribute(attrId, meta)) return normalizeHashtagString(value);
   if (isBooleanAttribute(meta)) return normalizeBooleanValue(value);
+  if (shouldDropUnsafeOptionalNumericAttribute(attrId, meta, value)) return '';
   const text = cleanText(value);
   return text || '';
 }
@@ -870,7 +959,7 @@ function buildOzonItem(row, generated, settings, index) {
   const attrs = [];
   addAttribute(attrs, ATTR_MODEL_NAME, generated.model_name || generated.title_ru);
   addAttribute(attrs, ATTR_DESCRIPTION, generated.description_ru);
-  addAttribute(attrs, ATTR_TAGS, normalizeHashtagString(generated.tags.join(' ')));
+  addAttribute(attrs, ATTR_TAGS, normalizeHashtagList(generated.tags));
   // Merge backend-generated category attributes into item.attributes
   addGeneratedCategoryAttributes(attrs, generated);
   return {
