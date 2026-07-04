@@ -37,6 +37,61 @@ const PRODUCT_IMPORT_ITEM_KEYS = new Set([
   'width',
 ]);
 
+// ── Title quality validation ──
+
+function hasSuspiciousTitleStructure(title) {
+  const text = cleanText(title);
+  if (!text) return true;
+  const words = text.split(/\s+/).filter(Boolean);
+  if (words.length < 3) return true;
+  if (text.length > 180) return true;
+  const commaCount = (text.match(/[,，]/g) || []).length;
+  if (commaCount >= 4) return true;
+  const normalizedWords = words.map((w) => w.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ''));
+  const uniqueWords = new Set(normalizedWords.filter(Boolean));
+  if (normalizedWords.length >= 8 && uniqueWords.size / normalizedWords.length < 0.55) return true;
+  const connectorCount = words.filter((w) => /^(для|из|с|со|в|на|под|и|или)$/i.test(w)).length;
+  if (words.length >= 10 && connectorCount === 0) return true;
+  return false;
+}
+
+async function repairOzonTitleIfNeeded(settings, sourceRows, generated) {
+  const currentTitle = cleanText(generated?.title_ru);
+  if (!hasSuspiciousTitleStructure(currentTitle)) return generated;
+
+  try {
+    const payload = {
+      task: 'repair_ozon_title_ru',
+      problem: 'The current Russian title may be unnatural, grammatically unclear, or keyword-stuffed.',
+      rules: [
+        'Return JSON only.',
+        'Create one natural Russian product title.',
+        'Do not write a keyword list.',
+        'Do not translate Chinese source text word-by-word.',
+        'Remove meaningless or grammatically unclear fragments.',
+        'Keep the title factual and understandable.',
+        'Do not add advertising slogans or promotional words.',
+        'Do not invent brand, certification, exact material, or exact functions if not supported by source data.',
+        'The title must clearly tell a buyer what the product is.',
+        'Keep the title concise, preferably 45-120 characters.',
+      ],
+      current_title_ru: currentTitle,
+      category_path: generated?.matched_category?.path || '',
+      source_rows: sourceRowsForAi(sourceRows),
+    };
+    const messages = [
+      { role: 'system', content: 'You are a Russian Ozon marketplace title editor. Repair unclear or keyword-stuffed product titles. Return compliant JSON only.' },
+      { role: 'user', content: JSON.stringify(payload) },
+    ];
+    const result = await callAi(settings.ai, messages);
+    const fixedTitle = cleanText(result?.title_ru || result?.fixed_title_ru || '');
+    if (fixedTitle && !hasSuspiciousTitleStructure(fixedTitle)) {
+      generated.title_ru = fixedTitle.slice(0, 500);
+    }
+  } catch { /* best-effort — keep original title if repair fails */ }
+  return generated;
+}
+
 async function generateOzonDraft(settings, rows = []) {
   const sourceRows = Array.isArray(rows) ? rows.filter((row) => row && typeof row === 'object') : [];
   if (!sourceRows.length) throw new Error('没有可生成 Ozon 草稿的 1688 SKU 数据。');
@@ -50,6 +105,9 @@ async function generateOzonDraft(settings, rows = []) {
   if (categoryContext.exactCategory) {
     normalized.matched_category = categoryContext.exactCategory;
   }
+
+  // Repair unnatural/keyword-stuffed titles before building items
+  await repairOzonTitleIfNeeded(settings, sourceRows, normalized);
 
   // Fill category attributes immediately — part of draft generation
   await fillCategoryAttributes(settings, sourceRows, normalized);
@@ -96,6 +154,9 @@ async function prepareOzonImportItems(settings, items) {
     importItem.attributes = normalizeAttributesForOzonImport(importItem.attributes, metaById);
 
     importItem.name = cleanText(importItem.name).slice(0, 500);
+    if (hasSuspiciousTitleStructure(importItem.name)) {
+      throw new Error(`提交前校验失败：商品名称可能存在无意义文本或语法问题，请重新生成或手动修改。offer_id=${importItem.offer_id}`);
+    }
     importItem.offer_id = cleanText(importItem.offer_id);
     importItem.price = String(Math.max(positiveNumber(importItem.price), 1));
     importItem.old_price = String(importItem.old_price || '0');
@@ -1338,7 +1399,7 @@ function uniqueStrings(values) {
 function collectDraftMissing(items, draft) {
   const missing = new Set();
   for (const item of items) {
-    if (!item.name) missing.add('俄语标题');
+    if (!item.name || hasSuspiciousTitleStructure(item.name)) missing.add('商品名称');
     if (!item.primary_image) missing.add('主图');
     if (!item.description_category_id || !item.type_id) missing.add('Ozon 类目');
     if (!Number(item.price)) missing.add('价格');
