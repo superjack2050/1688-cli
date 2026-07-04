@@ -412,35 +412,26 @@ async function submitOzonDraft(settings, draft, options = {}) {
       taskId,
       importStatus: 'pending',
       importResult: importResult.data,
-      warnings: ['Ozon 导入结果仍在处理中，尚未执行价格和库存更新。'],
+      priceResult: null,
+      stockResult: null,
+      warnings: ['Ozon 导入结果仍在处理中。'],
       submittedAt,
       checkedAt: new Date().toISOString(),
     };
   }
 
-  const priceResult = await updateImportPrices(settings.ozon, importItems);
-  const stockPlan = buildStockPayload(settings, draft, importItems);
-  const warnings = [];
-  let stockResult = null;
-
-  if (stockPlan.stocks.length > 0) {
-    if (stockPlan.warehouseId) {
-      stockResult = await updateStocks(settings.ozon, stockPlan.stocks);
-    } else {
-      warnings.push('库存待配置：未设置 Ozon 仓库 ID，已跳过库存更新。');
-    }
-  }
+  process.stderr.write(`[ozon-submit] import completed taskId=${taskId}; price/stock sync disabled\n`);
 
   return {
     ok: true,
     transport: 'ozon_seller_api',
     operationId: 'ProductAPI_ImportProductsV3',
     taskId,
-    importStatus: warnings.length ? 'imported' : 'listing_ready',
+    importStatus: 'imported',
     importResult: importResult.data,
-    priceResult,
-    stockResult,
-    warnings,
+    priceResult: null,
+    stockResult: null,
+    warnings: [],
     submittedAt,
     checkedAt: new Date().toISOString(),
   };
@@ -607,50 +598,6 @@ function formatImportError(raw, offerId) {
     return parts.filter(Boolean).join(' | ');
   }
   return String(raw);
-}
-
-async function updateImportPrices(ozon, items) {
-  const prices = items
-    .map((item) => ({
-      offer_id: String(item.offer_id || '').trim(),
-      price: String(item.price || '').trim(),
-      old_price: String(item.old_price ?? '0').trim() || '0',
-      currency_code: String(item.currency_code || ozon.currencyCode || 'CNY').trim(),
-      vat: String(item.vat ?? '0').trim() || '0',
-    }))
-    .filter((item) => item.offer_id && Number(item.price) > 0);
-  if (!prices.length) throw new Error('价格更新失败：草稿中没有有效的 offer_id 和 price。');
-  const data = await callOzonSellerApi(ozon, '/v1/product/import/prices', { prices });
-  const errors = collectImportErrors(data);
-  if (errors.length) throw new Error(`价格更新失败：${errors.join('；')}`);
-  return data;
-}
-
-function buildStockPayload(settings, draft, items) {
-  const warehouseId = cleanText(settings?.ozon?.defaultWarehouseId);
-  const rows = Array.isArray(draft?.sourceRows) ? draft.sourceRows : [];
-  const stocks = [];
-
-  for (let i = 0; i < items.length; i++) {
-    const item = items[i] || {};
-    const offerId = cleanText(item.offer_id);
-    const stock = stockOf(rows[i], item);
-    if (!offerId || stock <= 0) continue;
-    stocks.push({
-      offer_id: offerId,
-      stock,
-      warehouse_id: Number(warehouseId) || warehouseId,
-    });
-  }
-
-  return { warehouseId, stocks };
-}
-
-async function updateStocks(ozon, stocks) {
-  const data = await callOzonSellerApi(ozon, '/v2/products/stocks', { stocks });
-  const errors = collectImportErrors(data);
-  if (errors.length) throw new Error(`库存更新失败：${errors.join('；')}`);
-  return data;
 }
 
 function stockOf(row, item) {
