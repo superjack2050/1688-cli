@@ -103,6 +103,12 @@ async function prepareOzonImportItems(settings, items) {
     importItem.images = uniqueStrings(Array.isArray(importItem.images) ? importItem.images : []);
     importItem.primary_image = cleanText(importItem.primary_image || importItem.images[0] || '');
 
+    const submitWeight = positiveNumber(importItem.weight);
+    if (!submitWeight || submitWeight < MIN_VALID_WEIGHT_G) {
+      throw new Error('提交前校验失败：含包装重量无效（为 0 或 1g 占位值），请重新生成草稿。');
+    }
+    importItem.weight = Math.round(submitWeight);
+
     return importItem;
   });
 }
@@ -754,6 +760,32 @@ function buildCategoryCandidatesByKeyword(categoryIndex, keyword, sourceRows) {
 
 // ── AI messages ──
 
+const MIN_VALID_WEIGHT_G = 2;
+
+function validCollectedWeightG(value) {
+  const w = positiveNumber(value);
+  return w && w >= MIN_VALID_WEIGHT_G ? w : 0;
+}
+
+function validEstimatedWeightG(value) {
+  const w = positiveNumber(value);
+  return w && w >= MIN_VALID_WEIGHT_G ? w : 0;
+}
+
+function sourceRowsForAi(rows) {
+  return (Array.isArray(rows) ? rows : []).slice(0, 8).map((row) => {
+    const collectedW = positiveNumber(row.weight_g);
+    if (collectedW && collectedW < MIN_VALID_WEIGHT_G) {
+      return {
+        ...row,
+        weight_g: null,
+        weight_note: `Collected packed weight ${collectedW}g is invalid placeholder data and must be ignored. Estimate realistic packed weight in grams instead.`,
+      };
+    }
+    return row;
+  });
+}
+
 function buildMessages(rows, candidates) {
   const payload = {
     task: 'generate_ozon_listing_from_1688_desktop',
@@ -791,7 +823,7 @@ function buildMessages(rows, candidates) {
       'Do not invent description_category_id, type_id, or category path.',
       'Only title_ru, model_name, description_ru, tags, and estimated_dimensions should be generated freely.',
     ],
-    source_rows: rows.slice(0, 8),
+    source_rows: sourceRowsForAi(rows),
     category_candidates: candidates,
   };
   return [
@@ -864,7 +896,7 @@ function normalizeGenerated(data, candidates) {
       length_cm: positiveNumber(data?.estimated_dimensions?.length_cm),
       width_cm: positiveNumber(data?.estimated_dimensions?.width_cm),
       height_cm: positiveNumber(data?.estimated_dimensions?.height_cm),
-      weight_g: positiveNumber(data?.estimated_dimensions?.weight_g),
+      weight_g: validEstimatedWeightG(data?.estimated_dimensions?.weight_g),
     },
   };
 }
@@ -916,7 +948,9 @@ function buildOzonItem(row, generated, settings, index) {
   const depth = positiveNumber(row.length_cm) || positiveNumber(dims.length_cm) || 0;
   const width = positiveNumber(row.width_cm) || positiveNumber(dims.width_cm) || 0;
   const height = positiveNumber(row.height_cm) || positiveNumber(dims.height_cm) || 0;
-  const weight = positiveNumber(row.weight_g) || positiveNumber(dims.weight_g) || 0;
+  const collectedW = validCollectedWeightG(row.weight_g);
+  const aiWeight = validEstimatedWeightG(dims.weight_g);
+  const weight = collectedW || aiWeight || 0;
   const attrs = [];
   addAttribute(attrs, ATTR_MODEL_NAME, generated.model_name || generated.title_ru);
   addAttribute(attrs, ATTR_DESCRIPTION, generated.description_ru);
@@ -1303,9 +1337,11 @@ function collectDraftMissing(items, draft) {
     if (!item.primary_image) missing.add('主图');
     if (!item.description_category_id || !item.type_id) missing.add('Ozon 类目');
     if (!Number(item.price)) missing.add('价格');
-    for (const [key, label] of [['depth', '长'], ['width', '宽'], ['height', '高'], ['weight', '重量']]) {
+    for (const [key, label] of [['depth', '长'], ['width', '宽'], ['height', '高']]) {
       if (!Number(item[key])) missing.add(label);
     }
+    const weightVal = positiveNumber(item.weight);
+    if (!weightVal || weightVal < MIN_VALID_WEIGHT_G) missing.add('含包装重量');
   }
   if (hasUnconfirmedVariantMapping(draft)) missing.add('规格属性映射');
   return Array.from(missing);
