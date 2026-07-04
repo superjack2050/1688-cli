@@ -117,15 +117,16 @@ async function loadAttributeMetaByCategory(settings, items) {
 
   for (const key of keys) {
     const [descriptionCategoryId, typeId] = key.split(':').map(Number);
-    try {
-      const data = await callOzonSellerApi(settings.ozon, '/v1/description-category/attribute', {
-        description_category_id: descriptionCategoryId,
-        type_id: typeId,
-        language: 'ZH_HANS',
-      });
-      const attrs = normalizeCategoryAttributesForImport(data);
-      result[key] = Object.fromEntries(attrs.map((attr) => [Number(attr.id), attr]));
-    } catch { /* best-effort */ }
+    const data = await callOzonSellerApi(settings.ozon, '/v1/description-category/attribute', {
+      description_category_id: descriptionCategoryId,
+      type_id: typeId,
+      language: 'ZH_HANS',
+    });
+    const attrs = normalizeCategoryAttributesForImport(data);
+    if (!attrs.length) {
+      throw new Error(`提交前校验失败：Ozon 类目 ${descriptionCategoryId}/${typeId} 没有返回属性元数据，不能安全提交。`);
+    }
+    result[key] = Object.fromEntries(attrs.map((attr) => [Number(attr.id), attr]));
   }
 
   return result;
@@ -227,14 +228,24 @@ function normalizeBooleanValue(value) {
 const MAX_OZON_HASHTAG_LENGTH = 30;
 const MAX_OZON_HASHTAG_COUNT = 20;
 
+const KNOWN_HASHTAG_ATTR_IDS = new Set([23171, 22508]);
+
 function isHashtagAttribute(attrId, meta) {
+  const id = Number(attrId);
+  if (KNOWN_HASHTAG_ATTR_IDS.has(id)) return true;
   const name = `${meta.name || ''}`.toLowerCase();
-  return Number(attrId) === ATTR_TAGS || /hashtag|хэштег|тег|标签/.test(name);
+  return /hashtag|хештег|хэштег|тег|标签|主题标签/.test(name);
 }
 
 function sanitizeHashtagCore(value) {
-  return String(value || '').replace(/^#+/, '').trim()
-    .replace(/\s+/g, '_').replace(/[^\p{L}\p{N}_-]+/gu, '').replace(/[_-]+$/g, '');
+  return String(value || '')
+    .replace(/^#+/, '')
+    .trim()
+    .replace(/\s+/g, '_')
+    // Ozon only allows letters, digits and underscore. Hyphens not allowed.
+    .replace(/[^\p{L}\p{N}_]+/gu, '_')
+    .replace(/_+/g, '_')
+    .replace(/^_+|_+$/g, '');
 }
 
 function normalizeSingleHashtag(value) {
@@ -306,7 +317,10 @@ function isValidOzonHashtagValue(value) {
   const text = cleanText(value);
   if (!text) return false;
   const tags = text.split(/\s+/).filter(Boolean);
-  return tags.length > 0 && tags.every((t) => t.startsWith('#') && t.length <= MAX_OZON_HASHTAG_LENGTH && !/\s/.test(t));
+  if (!tags.length) return false;
+  return tags.every((t) => (
+    t.startsWith('#') && t.length <= MAX_OZON_HASHTAG_LENGTH && /^#[\p{L}\p{N}_]+$/u.test(t)
+  ));
 }
 
 // ── Dangerous optional numeric attribute filter ──
