@@ -637,17 +637,20 @@ export default function CommandPanel({ registry, activeProfile, accounts, onHist
     // Write deep collect result back to productHistory for persistence
     if (patch.deep && patch.offerId) {
       const deep = patch.deep as Record<string, unknown>;
+      const deepImages = Array.isArray(deep.images) ? deep.images as string[] : [];
       api.productHistory.add([{
         ...deep,
         offerId: patch.offerId,
         title: deep.title || deep.productTitle,
-        image: deep.mainImage || deep.image,
+        image: deep.mainImage || deepImages[0] || deep.image,
         price: deep.priceText || deep.priceRange,
         url: deep.url,
         deepCollected: true,
         deepCollectStatus: 'success',
         deepOffer: deep,
-      }], { sourceCommand: 'deepCollect', profile: activeProfile }).catch(() => {});
+      }], { sourceCommand: 'deepCollect', profile: activeProfile })
+        .then(() => onHistoryRefresh())
+        .catch(() => {});
     }
   };
 
