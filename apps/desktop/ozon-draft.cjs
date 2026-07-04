@@ -870,7 +870,7 @@ function buildOzonItem(row, generated, settings, index) {
   const attrs = [];
   addAttribute(attrs, ATTR_MODEL_NAME, generated.model_name || generated.title_ru);
   addAttribute(attrs, ATTR_DESCRIPTION, generated.description_ru);
-  addAttribute(attrs, ATTR_TAGS, generated.tags.join(' '));
+  addAttribute(attrs, ATTR_TAGS, normalizeHashtagString(generated.tags.join(' ')));
   // Merge backend-generated category attributes into item.attributes
   addGeneratedCategoryAttributes(attrs, generated);
   return {
