@@ -683,3 +683,64 @@ select {
   .side-nav { display: none; }
   .workspace-inner { padding: 12px; }
 }
+
+/* ── Product history inline panel ── */
+.product-history-inline-section {
+  margin-top: 28px;
+  padding: 20px;
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  border-radius: 24px;
+  background: rgba(255, 255, 255, 0.62);
+  box-shadow: 0 18px 50px rgba(15, 23, 42, 0.06);
+  backdrop-filter: blur(18px);
+}
+.product-history-inline-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+.product-history-inline-header h3 { margin: 0; font-size: 18px; font-weight: 800; color: var(--text-primary); }
+.product-history-inline-header p { margin: 4px 0 0; font-size: 13px; color: var(--text-secondary); }
+.product-history-inline-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 14px;
+}
+.product-history-inline-card {
+  display: flex; flex-direction: column; gap: 10px; padding: 10px;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 18px; background: rgba(255, 255, 255, 0.86);
+  cursor: pointer; text-align: left;
+  transition: transform 0.16s ease, box-shadow 0.16s ease, border-color 0.16s ease;
+}
+.product-history-inline-card:hover {
+  transform: translateY(-2px);
+  border-color: rgba(59, 130, 246, 0.35);
+  box-shadow: 0 16px 36px rgba(37, 99, 235, 0.12);
+}
+.product-history-inline-thumb {
+  width: 100%; aspect-ratio: 1/1; border-radius: 14px; overflow: hidden;
+  background: rgba(241, 245, 249, 0.92);
+}
+.product-history-inline-thumb img {
+  width: 100%; height: 100%; object-fit: cover; display: block;
+}
+.product-history-inline-info {
+  display: flex; flex-direction: column; gap: 4px; min-width: 0;
+}
+.product-history-inline-info strong {
+  font-size: 13px; line-height: 1.35; color: var(--text-primary);
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
+.product-history-inline-info span {
+  font-size: 13px; font-weight: 700; color: #2563eb;
+}
+.product-history-inline-info small {
+  font-size: 11px; color: var(--text-tertiary);
+}
+.product-history-inline-empty {
+  padding: 32px 16px; border: 1px dashed rgba(148, 163, 184, 0.32);
+  border-radius: 18px; color: var(--text-secondary); text-align: center;
+}

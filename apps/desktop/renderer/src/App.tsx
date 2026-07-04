@@ -6,6 +6,7 @@ import CommandPanel from './components/Commands/CommandPanel';
 import HistoryModal from './components/History/HistoryModal';
 import HistoryDetailModal from './components/History/HistoryDetailModal';
 import ProductHistoryModal from './components/History/ProductHistoryModal';
+import ProductHistoryInlinePanel from './components/History/ProductHistoryInlinePanel';
 import OzonSettingsModal from './components/Ozon/OzonSettingsModal';
 import OzonProductPage from './components/Ozon/OzonProductPage';
 import AccountSettingsModal from './components/Account/AccountSettingsModal';
@@ -222,6 +223,11 @@ export default function App() {
 
   useEffect(() => { loadAll(); }, []);
 
+  useEffect(() => {
+    refreshProductHistory().catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const handleAccountChange = async (profile: string) => {
     await api.accounts.setActive(profile);
     setActiveProfile(profile);
@@ -247,10 +253,9 @@ export default function App() {
     setHistory(items);
   };
 
-  const openProductHistory = async () => {
+  const refreshProductHistory = async () => {
     const items = await api.productHistory.list(500);
     setProductItems(items);
-    setProductHistoryOpen(true);
   };
 
   const openHistory = async () => {
@@ -439,7 +444,6 @@ export default function App() {
             <button className="glass-btn-secondary topbar-config-btn" onClick={() => setOzonSettingsOpen('store')}>Ozon 店铺</button>
             <button className="glass-btn-secondary topbar-config-btn" onClick={() => setAccountSettingsOpen(true)}>1688账号</button>
             <button className="glass-btn-secondary" onClick={openRecentTasks}>最近任务</button>
-            <button className="glass-btn-secondary" onClick={openProductHistory}>历史记录</button>
           </div>
         </header>
 
@@ -456,6 +460,10 @@ export default function App() {
                 onHistoryRefresh={refreshRecentTasks}
                 onDeepTasksChange={handleDeepTasksChange}
                 onOzonTasksChange={handleOzonTasksChange}
+              />
+              <ProductHistoryInlinePanel
+                items={productItems}
+                onRefresh={refreshProductHistory}
               />
             </ErrorBoundary>
           </section>
