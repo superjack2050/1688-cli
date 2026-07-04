@@ -799,3 +799,13 @@ select {
 .product-history-inline-check:disabled {
   opacity: 0.3; cursor: not-allowed;
 }
+.product-history-toast {
+  position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+  padding: 10px 22px; border-radius: 12px; font-size: 13px; font-weight: 700;
+  color: #fff; background: rgba(15, 23, 42, 0.88); backdrop-filter: blur(12px);
+  z-index: 9999; pointer-events: none; animation: toast-in 0.25s ease;
+}
+@keyframes toast-in {
+  from { opacity: 0; transform: translateX(-50%) translateY(12px); }
+  to { opacity: 1; transform: translateX(-50%) translateY(0); }
+}

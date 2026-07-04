@@ -477,6 +477,7 @@ export default function App() {
                 items={productItems}
                 ozonTasks={ozonTasks}
                 onRefresh={refreshProductHistory}
+                activeProfile={activeProfile}
                 batchDeepCollect={batchActions?.enqueueMultipleDeepCollect}
                 batchOzonListing={batchActions?.enqueueMultipleOzonListing}
               />

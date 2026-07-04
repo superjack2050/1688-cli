@@ -1,6 +1,9 @@
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
+import { getApi } from '../../services/api';
 import OfferDetailModal from '../Results/OfferDetailModal';
 import { ProgressOfferCardItem } from '../Results/ProgressOfferCard';
+import { useDeepCollectQueue } from '../Results/deepCollect/useDeepCollectQueue';
+import { useOzonListingQueue } from '../Results/ozonListing/useOzonListingQueue';
 import type { OzonListingTask } from '../Results/ozonListing/types';
 
 interface ProductItem {
@@ -17,6 +20,8 @@ interface Props {
   items: ProductItem[];
   ozonTasks?: OzonListingTask[];
   onRefresh?: () => void;
+  activeProfile?: string;
+  /** External overrides — used when ResultRenderer is mounted (shared session), ignored otherwise */
   batchDeepCollect?: (items: ProgressOfferCardItem[]) => void;
   batchOzonListing?: (items: ProgressOfferCardItem[]) => void;
 }
@@ -64,12 +69,9 @@ function isGeneratedStatus(status: string): boolean {
 function hasGeneratedDraft(item: ProductItem, ozonTasks: OzonListingTask[] = []): boolean {
   const offerId = textOf(item.offerId);
   const raw = item.raw && typeof item.raw === 'object' ? item.raw as Record<string, unknown> : {};
-
-  // Check productHistory persisted flags first
   if (raw.ozonDraftGenerated === true) return true;
   if (raw.draftGenerated === true) return true;
   if (raw.ozonDraftId || raw.draftId) return true;
-
   if (!offerId) return false;
   return ozonTasks.some((task) => {
     if (task.offerId !== offerId) return false;
@@ -102,15 +104,75 @@ function toOfferCardItem(p: ProductItem): ProgressOfferCardItem {
   };
 }
 
-export default function ProductHistoryInlinePanel({ items, ozonTasks, onRefresh, batchDeepCollect, batchOzonListing }: Props) {
+const HISTORY_SESSION_KEY = 'history-panel';
+
+export default function ProductHistoryInlinePanel({ items, ozonTasks, onRefresh, activeProfile, batchDeepCollect: extBatchDeepCollect, batchOzonListing: extBatchOzonListing }: Props) {
   const [selected, setSelected] = useState<ProductItem | null>(null);
   const [selectedOfferIds, setSelectedOfferIds] = useState<Set<string>>(new Set());
+  const [toast, setToast] = useState('');
+  const showToast = (msg: string, timeout = 1800) => {
+    setToast(msg);
+    setTimeout(() => setToast(''), timeout);
+  };
+
+  const api = getApi();
+  const profile = activeProfile || 'default';
+
+  // Local deep-collect hooks so batch buttons work even when ResultRenderer isn't mounted
+  const [cardOverrides, setCardOverrides] = useState<Record<string, Partial<ProgressOfferCardItem>>>({});
+  const [deepJsonByOfferId, setDeepJsonByOfferId] = useState<Record<string, Record<string, unknown>>>({});
+  const [deepFailuresByOfferId, setDeepFailuresByOfferId] = useState<Record<string, Record<string, unknown>>>({});
+
+  const onDeepCollectDataPatchRef = useRef((patch: { offerId?: string; deep?: Record<string, unknown> }) => {
+    if (patch.deep && patch.offerId) {
+      const deep = patch.deep;
+      const deepImages = Array.isArray(deep.images) ? deep.images as string[] : [];
+      api.productHistory.add([{
+        ...deep,
+        offerId: patch.offerId,
+        title: deep.title || deep.productTitle,
+        image: deep.mainImage || deepImages[0] || deep.image,
+        price: deep.priceText || deep.priceRange,
+        url: deep.url,
+        deepCollected: true,
+        deepCollectStatus: 'success',
+        deepOffer: deep,
+      }], { sourceCommand: 'deepCollect', profile })
+        .then(() => onRefresh?.())
+        .catch(() => {});
+    }
+  });
+
+  const { enqueueMultipleDeepCollect: localEnqueueDeep } = useDeepCollectQueue({
+    sessionKey: HISTORY_SESSION_KEY,
+    api,
+    activeProfile: profile,
+    onDeepCollectDataPatch: onDeepCollectDataPatchRef.current,
+    cardOverrides,
+    setCardOverrides,
+    setDeepJsonByOfferId,
+    setDeepFailuresByOfferId,
+    showToast,
+  });
+
+  const cardsForOzon = items.map(toOfferCardItem);
+  const { enqueueMultipleOzonListing: localEnqueueOzon } = useOzonListingQueue({
+    sessionKey: `${HISTORY_SESSION_KEY}:ozon`,
+    api,
+    cards: cardsForOzon,
+    enqueueSingleDeepCollect: (item) => localEnqueueDeep([item]),
+    showToast,
+    activeProfile: profile,
+  });
+
+  // Prefer external (shared ResultRenderer session) over local (isolated session)
+  const enqueueDeep = extBatchDeepCollect || localEnqueueDeep;
+  const enqueueOzon = extBatchOzonListing || localEnqueueOzon;
 
   const selectableItems = items.filter((item) => textOf(item.offerId));
   const selectedCount = selectableItems.filter((item) => selectedOfferIds.has(textOf(item.offerId))).length;
   const allSelected = selectableItems.length > 0 && selectedCount === selectableItems.length;
-  const showBatchBar = selectedCount > 0 && (batchDeepCollect || batchOzonListing);
-  const hasBatchActions = Boolean(batchDeepCollect || batchOzonListing);
+  const showBatchBar = selectedCount > 0;
 
   const toggleSelect = (offerId: string) => {
     setSelectedOfferIds((prev) => {
@@ -134,26 +196,30 @@ export default function ProductHistoryInlinePanel({ items, ozonTasks, onRefresh,
   const handleBatchDeepCollect = () => {
     const selectedItems = items.filter((item) => selectedOfferIds.has(textOf(item.offerId)));
     const cards = selectedItems.map(toOfferCardItem);
-    batchDeepCollect?.(cards);
+    enqueueDeep(cards);
     setSelectedOfferIds(new Set());
+    showToast(`已加入 ${cards.length} 个商品到深采队列`);
   };
 
   const handleBatchOzonListing = () => {
     const selectedItems = items.filter((item) => selectedOfferIds.has(textOf(item.offerId)));
     const cards = selectedItems.map(toOfferCardItem);
-    batchOzonListing?.(cards);
+    enqueueOzon(cards);
     setSelectedOfferIds(new Set());
+    showToast(`已加入 ${cards.length} 个商品到草稿队列`);
   };
 
   return (
     <section className="product-history-inline-section">
+      {toast && <div className="product-history-toast">{toast}</div>}
+
       <header className="product-history-inline-header">
         <div>
           <h3>历史采集记录</h3>
           <p>最近采集商品，当前 {items.length} 个，最多保留 500 个</p>
         </div>
         <div className="product-history-inline-header-actions">
-          {hasBatchActions && selectableItems.length > 0 && (
+          {selectableItems.length > 0 && (
             <button type="button" className="glass-btn-secondary" onClick={toggleSelectAll}>
               {allSelected ? '取消全选' : '全选'}
             </button>
@@ -170,16 +236,12 @@ export default function ProductHistoryInlinePanel({ items, ozonTasks, onRefresh,
         <div className="product-history-batch-bar">
           <span className="product-history-batch-count">已选 {selectedCount} 个</span>
           <div className="product-history-batch-actions">
-            {batchDeepCollect && (
-              <button className="glass-btn-primary" onClick={handleBatchDeepCollect}>
-                批量深采
-              </button>
-            )}
-            {batchOzonListing && (
-              <button className="glass-btn-primary" onClick={handleBatchOzonListing}>
-                批量生成草稿
-              </button>
-            )}
+            <button className="glass-btn-primary" onClick={handleBatchDeepCollect}>
+              批量深采
+            </button>
+            <button className="glass-btn-primary" onClick={handleBatchOzonListing}>
+              批量生成草稿
+            </button>
           </div>
           <button className="glass-btn-ghost" onClick={clearSelection}>
             取消选择
@@ -206,21 +268,19 @@ export default function ProductHistoryInlinePanel({ items, ozonTasks, onRefresh,
                 key={`${offerId}-${item.collectedAt}`}
                 className={`product-history-inline-card-wrapper ${isSelected ? 'selected' : ''}`}
               >
-                {hasBatchActions && (
-                  <button
-                    type="button"
-                    className={`product-history-inline-check ${isSelected ? 'checked' : ''}`}
-                    disabled={!canSelect}
-                    aria-label={isSelected ? '取消选择' : '选择商品'}
-                    onClick={(e) => { e.stopPropagation(); if (canSelect) toggleSelect(offerId); }}
-                  >
-                    {isSelected && (
-                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
-                        <path d="M20 6 9 17l-5-5" />
-                      </svg>
-                    )}
-                  </button>
-                )}
+                <button
+                  type="button"
+                  className={`product-history-inline-check ${isSelected ? 'checked' : ''}`}
+                  disabled={!canSelect}
+                  aria-label={isSelected ? '取消选择' : '选择商品'}
+                  onClick={(e) => { e.stopPropagation(); if (canSelect) toggleSelect(offerId); }}
+                >
+                  {isSelected && (
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M20 6 9 17l-5-5" />
+                    </svg>
+                  )}
+                </button>
                 <button
                   type="button"
                   className="product-history-inline-card"
