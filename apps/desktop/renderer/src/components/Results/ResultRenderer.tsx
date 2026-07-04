@@ -29,6 +29,7 @@ interface Props {
   onOzonTasksChange?: (tasks: OzonListingTask[]) => void;
   onDeepCollectDataPatch?: (patch: DeepCollectDataPatch) => void;
   taskActionsDisabled?: boolean;
+  onBatchActionsReady?: (actions: { enqueueMultipleDeepCollect: (items: ProgressOfferCardItem[]) => void; enqueueMultipleOzonListing: (items: ProgressOfferCardItem[]) => void }) => void;
 }
 
 type ViewMode = 'card' | 'json';
@@ -136,7 +137,7 @@ function cardKey(card: ProgressOfferCardItem): string {
   return card.offerId ? `offer:${card.offerId}` : `slot:${card.slotIndex}`;
 }
 
-export default function ResultRenderer({ record, resultType, placeholderCards, running, activeProfile, manualDeepCollectHeaded = false, captchaRetryHeaded = false, autoDeepCollectOnMount = false, onDeepTasksChange, onOzonTasksChange, onDeepCollectDataPatch, taskActionsDisabled = false }: Props) {
+export default function ResultRenderer({ record, resultType, placeholderCards, running, activeProfile, manualDeepCollectHeaded = false, captchaRetryHeaded = false, autoDeepCollectOnMount = false, onDeepTasksChange, onOzonTasksChange, onDeepCollectDataPatch, taskActionsDisabled = false, onBatchActionsReady }: Props) {
   const api = getApi();
   const hasRecordSession = Boolean(record?.runId);
   const deepSessionKey = record?.runId ? `record:${record.runId}` : `transient:${resultType || 'unknown'}`;
@@ -238,6 +239,12 @@ export default function ResultRenderer({ record, resultType, placeholderCards, r
     showToast,
     activeProfile,
   });
+
+  const onBatchActionsReadyRef = useRef(onBatchActionsReady);
+  onBatchActionsReadyRef.current = onBatchActionsReady;
+  useEffect(() => {
+    onBatchActionsReadyRef.current?.({ enqueueMultipleDeepCollect, enqueueMultipleOzonListing });
+  }, [enqueueMultipleDeepCollect, enqueueMultipleOzonListing]);
 
   const handleBatchDeepCollect = () => {
     if (taskActionsDisabled) {

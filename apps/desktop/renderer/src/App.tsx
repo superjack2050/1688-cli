@@ -13,6 +13,7 @@ import AccountSettingsModal from './components/Account/AccountSettingsModal';
 import ErrorBoundary from './components/ErrorBoundary';
 import { formatOzonTaskDisplayMessage } from './components/Ozon/ozonError';
 import type { OzonListingTask, OzonListingTaskPatch, OzonListingTaskStatus } from './components/Results/ozonListing/types';
+import type { ProgressOfferCardItem } from './components/Results/ProgressOfferCard';
 import './styles/tokens.css';
 import './styles/controls.css';
 import './styles/panels.css';
@@ -196,6 +197,7 @@ export default function App() {
   const [ozonSettingsOpen, setOzonSettingsOpen] = useState<'ai' | 'store' | null>(null);
   const [accountSettingsOpen, setAccountSettingsOpen] = useState(false);
   const [productItems, setProductItems] = useState<Array<{ offerId: string; title: string; price: string; image: string; url: string; collectedAt: string; raw?: unknown }>>([]);
+  const [batchActions, setBatchActions] = useState<{ enqueueMultipleDeepCollect: (items: ProgressOfferCardItem[]) => void; enqueueMultipleOzonListing: (items: ProgressOfferCardItem[]) => void } | null>(null);
 
   const api = getApi();
 
@@ -469,11 +471,14 @@ export default function App() {
                 onHistoryRefresh={refresh1688HistoryData}
                 onDeepTasksChange={handleDeepTasksChange}
                 onOzonTasksChange={handleOzonTasksChange}
+                onBatchActionsReady={setBatchActions}
               />
               <ProductHistoryInlinePanel
                 items={productItems}
                 ozonTasks={ozonTasks}
                 onRefresh={refreshProductHistory}
+                batchDeepCollect={batchActions?.enqueueMultipleDeepCollect}
+                batchOzonListing={batchActions?.enqueueMultipleOzonListing}
               />
             </ErrorBoundary>
           </section>

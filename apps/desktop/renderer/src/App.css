@@ -762,3 +762,40 @@ select {
   padding: 32px 16px; border: 1px dashed rgba(148, 163, 184, 0.32);
   border-radius: 18px; color: var(--text-secondary); text-align: center;
 }
+.product-history-inline-header-actions {
+  display: flex; align-items: center; gap: 8px; flex-shrink: 0;
+}
+.product-history-batch-bar {
+  display: flex; align-items: center; gap: 12px; padding: 10px 14px;
+  margin-bottom: 14px; border-radius: 14px;
+  background: rgba(59, 130, 246, 0.06); border: 1px solid rgba(59, 130, 246, 0.18);
+}
+.product-history-batch-count {
+  font-size: 13px; font-weight: 700; color: #2563eb; white-space: nowrap;
+}
+.product-history-batch-actions {
+  display: flex; align-items: center; gap: 8px; flex: 1;
+}
+.product-history-inline-card-wrapper {
+  position: relative;
+}
+.product-history-inline-card-wrapper.selected .product-history-inline-card {
+  border-color: rgba(59, 130, 246, 0.45);
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.18);
+}
+.product-history-inline-check {
+  position: absolute; top: 8px; left: 8px; z-index: 2;
+  width: 22px; height: 22px; border-radius: 6px; display: flex;
+  align-items: center; justify-content: center; cursor: pointer;
+  border: 2px solid rgba(148, 163, 184, 0.45); background: rgba(255, 255, 255, 0.92);
+  color: transparent; transition: all 0.15s ease; padding: 0;
+}
+.product-history-inline-check:hover:not(:disabled) {
+  border-color: rgba(59, 130, 246, 0.55);
+}
+.product-history-inline-check.checked {
+  border-color: #2563eb; background: #2563eb; color: #fff;
+}
+.product-history-inline-check:disabled {
+  opacity: 0.3; cursor: not-allowed;
+}

@@ -24,6 +24,7 @@ interface Props {
   onHistoryRefresh: () => void;
   onDeepTasksChange?: (tasks: DeepCollectTask[]) => void;
   onOzonTasksChange?: (tasks: OzonListingTask[]) => void;
+  onBatchActionsReady?: (actions: { enqueueMultipleDeepCollect: (items: ProgressOfferCardItem[]) => void; enqueueMultipleOzonListing: (items: ProgressOfferCardItem[]) => void }) => void;
 }
 
 interface CommandUiSnapshot {
@@ -361,7 +362,7 @@ function KeywordCategoryTreeList({
   );
 }
 
-export default function CommandPanel({ registry, activeProfile, accounts, onHistoryRefresh, onDeepTasksChange, onOzonTasksChange }: Props) {
+export default function CommandPanel({ registry, activeProfile, accounts, onHistoryRefresh, onDeepTasksChange, onOzonTasksChange, onBatchActionsReady }: Props) {
   const [activeCmdId, setActiveCmdId] = useState('search');
   const activeCmdIdRef = useRef(activeCmdId);
   activeCmdIdRef.current = activeCmdId;
@@ -1417,6 +1418,7 @@ export default function CommandPanel({ registry, activeProfile, accounts, onHist
               onOzonTasksChange={onOzonTasksChange}
               onDeepCollectDataPatch={(patch) => handleDeepCollectDataPatch(patch, activeCmdId)}
               taskActionsDisabled={isAny1688TaskRunning}
+              onBatchActionsReady={onBatchActionsReady}
             />
           </>
         ) : visibleRecord ? (
@@ -1436,6 +1438,7 @@ export default function CommandPanel({ registry, activeProfile, accounts, onHist
               onOzonTasksChange={onOzonTasksChange}
               onDeepCollectDataPatch={(patch) => handleDeepCollectDataPatch(patch, visibleRecord.commandId, visibleRecord.runId)}
               taskActionsDisabled={isAny1688TaskRunning}
+              onBatchActionsReady={onBatchActionsReady}
             />
           </>
         ) : (

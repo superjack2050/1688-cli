@@ -17,6 +17,8 @@ interface Props {
   items: ProductItem[];
   ozonTasks?: OzonListingTask[];
   onRefresh?: () => void;
+  batchDeepCollect?: (items: ProgressOfferCardItem[]) => void;
+  batchOzonListing?: (items: ProgressOfferCardItem[]) => void;
 }
 
 function textOf(value: unknown): string {
@@ -100,8 +102,48 @@ function toOfferCardItem(p: ProductItem): ProgressOfferCardItem {
   };
 }
 
-export default function ProductHistoryInlinePanel({ items, ozonTasks, onRefresh }: Props) {
+export default function ProductHistoryInlinePanel({ items, ozonTasks, onRefresh, batchDeepCollect, batchOzonListing }: Props) {
   const [selected, setSelected] = useState<ProductItem | null>(null);
+  const [selectedOfferIds, setSelectedOfferIds] = useState<Set<string>>(new Set());
+
+  const selectableItems = items.filter((item) => textOf(item.offerId));
+  const selectedCount = selectableItems.filter((item) => selectedOfferIds.has(textOf(item.offerId))).length;
+  const allSelected = selectableItems.length > 0 && selectedCount === selectableItems.length;
+  const showBatchBar = selectedCount > 0 && (batchDeepCollect || batchOzonListing);
+  const hasBatchActions = Boolean(batchDeepCollect || batchOzonListing);
+
+  const toggleSelect = (offerId: string) => {
+    setSelectedOfferIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(offerId)) next.delete(offerId);
+      else next.add(offerId);
+      return next;
+    });
+  };
+
+  const toggleSelectAll = () => {
+    if (allSelected) {
+      setSelectedOfferIds(new Set());
+    } else {
+      setSelectedOfferIds(new Set(selectableItems.map((item) => textOf(item.offerId))));
+    }
+  };
+
+  const clearSelection = () => setSelectedOfferIds(new Set());
+
+  const handleBatchDeepCollect = () => {
+    const selectedItems = items.filter((item) => selectedOfferIds.has(textOf(item.offerId)));
+    const cards = selectedItems.map(toOfferCardItem);
+    batchDeepCollect?.(cards);
+    setSelectedOfferIds(new Set());
+  };
+
+  const handleBatchOzonListing = () => {
+    const selectedItems = items.filter((item) => selectedOfferIds.has(textOf(item.offerId)));
+    const cards = selectedItems.map(toOfferCardItem);
+    batchOzonListing?.(cards);
+    setSelectedOfferIds(new Set());
+  };
 
   return (
     <section className="product-history-inline-section">
@@ -110,12 +152,40 @@ export default function ProductHistoryInlinePanel({ items, ozonTasks, onRefresh 
           <h3>历史采集记录</h3>
           <p>最近采集商品，当前 {items.length} 个，最多保留 500 个</p>
         </div>
-        {onRefresh && (
-          <button type="button" className="glass-btn-secondary" onClick={onRefresh}>
-            刷新
-          </button>
-        )}
+        <div className="product-history-inline-header-actions">
+          {hasBatchActions && selectableItems.length > 0 && (
+            <button type="button" className="glass-btn-secondary" onClick={toggleSelectAll}>
+              {allSelected ? '取消全选' : '全选'}
+            </button>
+          )}
+          {onRefresh && (
+            <button type="button" className="glass-btn-secondary" onClick={onRefresh}>
+              刷新
+            </button>
+          )}
+        </div>
       </header>
+
+      {showBatchBar && (
+        <div className="product-history-batch-bar">
+          <span className="product-history-batch-count">已选 {selectedCount} 个</span>
+          <div className="product-history-batch-actions">
+            {batchDeepCollect && (
+              <button className="glass-btn-primary" onClick={handleBatchDeepCollect}>
+                批量深采
+              </button>
+            )}
+            {batchOzonListing && (
+              <button className="glass-btn-primary" onClick={handleBatchOzonListing}>
+                批量生成草稿
+              </button>
+            )}
+          </div>
+          <button className="glass-btn-ghost" onClick={clearSelection}>
+            取消选择
+          </button>
+        </div>
+      )}
 
       {items.length === 0 ? (
         <div className="product-history-inline-empty">
@@ -129,35 +199,56 @@ export default function ProductHistoryInlinePanel({ items, ozonTasks, onRefresh 
             const priceText = textOf(item.price);
             const offerId = textOf(item.offerId);
             const title = textOf(item.title) || offerId || '未命名商品';
+            const isSelected = selectedOfferIds.has(offerId);
+            const canSelect = Boolean(offerId);
             return (
-              <button
+              <div
                 key={`${offerId}-${item.collectedAt}`}
-                type="button"
-                className="product-history-inline-card"
-                onClick={() => setSelected(item)}
-                title={title}
+                className={`product-history-inline-card-wrapper ${isSelected ? 'selected' : ''}`}
               >
-                <div className="product-history-inline-thumb">
-                  {item.image ? (
-                    <img src={item.image} alt={title} loading="lazy" />
-                  ) : (
-                    <div className="product-history-inline-placeholder" />
-                  )}
-                </div>
-                <div className="product-history-inline-info">
-                  <strong>{title}</strong>
-                  {priceText && <span>{priceText}</span>}
-                  <div className="product-history-inline-status-row">
-                    <span className={`history-status-pill ${deepReady ? 'success' : 'muted'}`}>
-                      {deepReady ? '已深采' : '未深采'}
-                    </span>
-                    <span className={`history-status-pill ${generatedReady ? 'success' : 'muted'}`}>
-                      {generatedReady ? '已生成' : '未生成'}
-                    </span>
+                {hasBatchActions && (
+                  <button
+                    type="button"
+                    className={`product-history-inline-check ${isSelected ? 'checked' : ''}`}
+                    disabled={!canSelect}
+                    aria-label={isSelected ? '取消选择' : '选择商品'}
+                    onClick={(e) => { e.stopPropagation(); if (canSelect) toggleSelect(offerId); }}
+                  >
+                    {isSelected && (
+                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M20 6 9 17l-5-5" />
+                      </svg>
+                    )}
+                  </button>
+                )}
+                <button
+                  type="button"
+                  className="product-history-inline-card"
+                  onClick={() => setSelected(item)}
+                  title={title}
+                >
+                  <div className="product-history-inline-thumb">
+                    {item.image ? (
+                      <img src={item.image} alt={title} loading="lazy" />
+                    ) : (
+                      <div className="product-history-inline-placeholder" />
+                    )}
                   </div>
-                  <small className="product-history-inline-id">{offerId}</small>
-                </div>
-              </button>
+                  <div className="product-history-inline-info">
+                    <strong>{title}</strong>
+                    {priceText && <span>{priceText}</span>}
+                    <div className="product-history-inline-status-row">
+                      <span className={`history-status-pill ${deepReady ? 'success' : 'muted'}`}>
+                        {deepReady ? '已深采' : '未深采'}
+                      </span>
+                      <span className={`history-status-pill ${generatedReady ? 'success' : 'muted'}`}>
+                        {generatedReady ? '已生成' : '未生成'}
+                      </span>
+                    </div>
+                    <small className="product-history-inline-id">{offerId}</small>
+                  </div>
+                </button>
+              </div>
             );
           })}
         </div>
