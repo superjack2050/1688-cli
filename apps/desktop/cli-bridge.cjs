@@ -41,7 +41,7 @@ const COMMANDS = {
       selectOption('verified', '--verified', '供应商认证', 'any', VERIFIED_OPTIONS),
       numberOption('minTurnover', '--min-turnover', '最低成交'),
       boolOption('excludeAds', '--exclude-ads', '过滤广告位'),
-      boolOption('deeppro', '--deeppro', '采集商品详情'),
+      boolOption('deeppro', '--deeppro', '采集商品详情', true),
       numberOption('deepproDelayMin', '--deeppro-delay-min', '详情采集最小间隔/秒', 6),
       numberOption('deepproDelayMax', '--deeppro-delay-max', '详情采集最大间隔/秒', 10),
       selectOption('deepproSearchMode', '--deeppro-search-mode', 'DEEPPRO 搜索模式', 'inline', [

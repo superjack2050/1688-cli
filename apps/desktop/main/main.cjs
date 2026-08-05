@@ -45,6 +45,21 @@ const {
   generateOzonAttributeSuggestions,
 } = require('../ozon-draft.cjs');
 
+// Built-in AI config — shared by all users. Not in git (gitignored).
+const builtinAiConfig = (() => {
+  try { return require('../builtin-ai-config.json'); }
+  catch { return null; }
+})();
+
+function withBuiltinAi(settings) {
+  if (builtinAiConfig) {
+    settings.ai.baseUrl = builtinAiConfig.baseUrl || settings.ai.baseUrl;
+    settings.ai.model = builtinAiConfig.model || settings.ai.model;
+    settings.ai.apiKey = builtinAiConfig.apiKey;
+  }
+  return settings;
+}
+
 // ---------- runtime ----------
 
 /** @type {{ rootDir: string, cliPath: string }} */
@@ -61,6 +76,29 @@ function userDataDir() {
 /** Shorthand: run a CLI command with the shared runtime and history dir. */
 function exec(payload) {
   return runCliCommand(runtime, historyDir(), payload);
+}
+
+// Run a CLI command with dispatch auto-restart disabled (BB1688_NO_DAEMON=1).
+// Needed for daemon stop/status — otherwise dispatch auto-restarts the daemon.
+function execNoDaemon(args, profile) {
+  const cliPath = runtime.cliPath;
+  const childArgs = [cliPath, ...args, '--profile', String(profile), '--json'];
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, childArgs, {
+      cwd: runtime.rootDir,
+      env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', BB1688_NO_DAEMON: '1', BB1688_JSON: '1' },
+      windowsHide: true,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let stdout = '', stderr = '';
+    child.stdout.on('data', (d) => { stdout += d.toString(); });
+    child.stderr.on('data', (d) => { stderr += d.toString(); });
+    child.on('close', (code) => {
+      try { resolve({ exitCode: code, data: JSON.parse(stdout.trim()), stderr }); }
+      catch { resolve({ exitCode: code, data: null, stderr, raw: stdout }); }
+    });
+    child.on('error', reject);
+  });
 }
 
 // ---------- window ----------
@@ -250,11 +288,11 @@ function registerIpc() {
     getOzonCategoryAttributeValues(userDataDir(), params || {}),
   );
   ipcMain.handle('desktop:generateOzonDraft', async (_event, rows) =>
-    generateOzonDraft({ ...loadOzonSettings(userDataDir(), { includeSecrets: true }), userDataPath: userDataDir() }, rows),
+    generateOzonDraft(withBuiltinAi({ ...loadOzonSettings(userDataDir(), { includeSecrets: true }), userDataPath: userDataDir() }), rows),
   );
 
   ipcMain.handle('desktop:generateOzonAttributeSuggestions', async (_event, params) =>
-    generateOzonAttributeSuggestions({ ...loadOzonSettings(userDataDir(), { includeSecrets: true }), userDataPath: userDataDir() }, params || {}),
+    generateOzonAttributeSuggestions(withBuiltinAi({ ...loadOzonSettings(userDataDir(), { includeSecrets: true }), userDataPath: userDataDir() }), params || {}),
   );
 
   ipcMain.handle('desktop:submitOzonDraft', async (_event, draft, confirmed) => {
@@ -277,14 +315,20 @@ function registerIpc() {
   const activeLoginProcesses = new Map();
 
   async function stopDaemonForProfile(profile) {
-    try {
-      await exec({
-        commandId: 'daemonStop',
-        profile: String(profile),
-        saveHistory: false,
-        timeoutMs: 8000,
-      });
-    } catch { /* best-effort */ }
+    // Use execNoDaemon to prevent dispatch from auto-restarting the daemon
+    try { await execNoDaemon(['daemon', 'stop'], profile); } catch {}
+    // Poll until confirmed stopped
+    for (let i = 0; i < 10; i++) {
+      await new Promise((r) => setTimeout(r, 500));
+      try {
+        const r = await execNoDaemon(['daemon', 'status'], profile);
+        if (r.data && !r.data.running) {
+          console.log('[login-browser] daemon confirmed stopped for', profile);
+          return;
+        }
+      } catch {}
+    }
+    throw new Error(`无法停止 ${profile} 的 daemon，请手动关闭后重试。`);
   }
 
   function inferWhoamiAccountStatus(record) {
@@ -299,7 +343,7 @@ function registerIpc() {
   return 'unknown';
 }
 
-function openLoginBrowser(profile) {
+async function openLoginBrowser(profile) {
     const p = String(profile || '').trim();
     if (!p) throw new Error('profile 不能为空');
     const args = [
@@ -318,12 +362,40 @@ function openLoginBrowser(profile) {
     child.stdout.on('data', (chunk) => { console.log(`[login-browser:${p}]`, chunk.toString()); });
     child.stderr.on('data', (chunk) => { console.warn(`[login-browser:${p}]`, chunk.toString()); });
     child.on('close', (code) => { console.log('[login-browser] closed', p, code); activeLoginProcesses.delete(runId); });
-    return { ok: true, profile: p, runId, pid: child.pid, mode: 'browser' };
+
+    // Wait for first successful output or error, up to 8s
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        reject(new Error(`登录浏览器启动超时，请手动运行: 1688 login --profile ${p} --headed`));
+      }, 8000);
+      let firstOutput = '';
+      const onData = (chunk) => {
+        firstOutput += chunk.toString();
+        try {
+          const json = JSON.parse(firstOutput.trim().split('\n')[0]);
+          clearTimeout(timer);
+          if (json.ok === false) {
+            reject(new Error(json.message || json.code || '登录浏览器启动失败'));
+          } else {
+            resolve({ ok: true, profile: p, runId, pid: child.pid, mode: 'browser' });
+          }
+        } catch { /* wait for more data */ }
+      };
+      child.stdout.on('data', onData);
+      child.on('close', (code) => {
+        clearTimeout(timer);
+        if (code === 0) {
+          resolve({ ok: true, profile: p, runId, pid: child.pid, mode: 'browser' });
+        } else {
+          reject(new Error(`登录浏览器启动失败 (exit ${code})，请手动运行: 1688 login --profile ${p} --headed`));
+        }
+      });
+    });
   }
 
   ipcMain.handle('desktop:loginAccountBrowser', async (_event, profile) => {
     await stopDaemonForProfile(profile);
-    const result = openLoginBrowser(profile);
+    const result = await openLoginBrowser(profile);
     try { updateAccount(userDataDir(), profile, { status: 'login_opened', lastLoginAt: null }); } catch {}
     return { ...result, state: 'login_opened' };
   });
@@ -334,7 +406,7 @@ function openLoginBrowser(profile) {
     for (const profile of uniqueProfiles) {
       try {
         await stopDaemonForProfile(profile);
-        opened.push(openLoginBrowser(profile).profile);
+        opened.push((await openLoginBrowser(profile)).profile);
         try { updateAccount(userDataDir(), profile, { status: 'login_opened', lastLoginAt: null }); } catch {}
         await new Promise((r) => setTimeout(r, 800));
       } catch (e) { console.error('[login-browser] error', profile, e); }

@@ -1,4 +1,7 @@
 import { createRequire } from 'node:module';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const require = createRequire(import.meta.url);
@@ -34,6 +37,12 @@ function ok(body: unknown) {
     status: 200,
     text: async () => JSON.stringify(body),
   };
+}
+
+function categoryAttributeMeta() {
+  return ok({
+    result: [{ id: 9048, name: '型号', is_required: false }],
+  }) as Response;
 }
 
 function baseItem(overrides: Record<string, unknown> = {}) {
@@ -148,7 +157,7 @@ describe('ozon draft submit helper', () => {
 
     expect(draft.variant).toMatchObject({
       type: 'ozon_model_variants',
-      status: 'needs_attribute_mapping',
+      status: 'needs_attribute_id_confirmation',
       confirmed: false,
       group_attribute_id: 9048,
       group_value: 'Model Group',
@@ -162,19 +171,93 @@ describe('ozon draft submit helper', () => {
     expect(draft.items[0]._variant).toMatchObject({
       source_sku_id: 'sku-red',
       values: { '颜色': '红色', '尺码': 'M' },
-      mapping_status: 'needs_attribute_mapping',
+      mapping_status: 'needs_attribute_id_confirmation',
     });
     expect(draft.missing).toContain('规格属性映射');
   });
 
-  it('imports product, polls task_id, then updates price and stock', async () => {
+  it('simulates a collected 1688 product through category resolution and Ozon import', async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'desktop-flow-'));
+    try {
+      await fs.mkdir(path.join(tempDir, 'categories'), { recursive: true });
+      await fs.writeFile(path.join(tempDir, 'categories', 'ozon_category_tree.zh_hans.json'), JSON.stringify({
+        result: [{
+          description_category_id: 1700,
+          category_name: '手机配件',
+          children: [{
+            description_category_id: 1700,
+            category_name: '保护配件',
+            children: [{
+              description_category_id: 1700,
+              type_id: 9300,
+              type_name: '手机壳',
+              children: [],
+            }],
+          }],
+        }],
+      }), 'utf8');
+      await fs.writeFile(path.join(tempDir, 'ozon_settings.json'), JSON.stringify({
+        ai: { provider: 'deepseek', baseUrl: 'https://api.example.test', model: 'model', apiKey: 'ai-key' },
+        ozon: { clientId: 'client', apiKey: 'key', currencyCode: 'CNY' },
+      }), 'utf8');
+
+      const fetchMock = vi.mocked(fetch);
+      fetchMock
+        .mockResolvedValueOnce(aiDraftResponse())
+        .mockResolvedValueOnce(categoryAttributeMeta())
+        .mockResolvedValueOnce(categoryAttributeMeta())
+        .mockResolvedValueOnce(categoryAttributeMeta())
+        .mockResolvedValueOnce(ok({ result: { task_id: 8844 } }) as Response)
+        .mockResolvedValueOnce(ok({ result: { items: [{ offer_id: '1688-offer', status: 'imported' }] } }) as Response);
+
+      const flowSettings = {
+        ai: { apiKey: 'ai-key', baseUrl: 'https://api.example.test', model: 'model' },
+        ozon: { clientId: 'client', apiKey: 'key', currencyCode: 'CNY' },
+        userDataPath: tempDir,
+      };
+      const draft = await generateOzonDraft(flowSettings, [{
+        offer_id: '1688-offer',
+        sku_id: 'sku-1',
+        search_keyword: '手机壳',
+        product_title: '透明手机保护壳',
+        sku_name: '颜色:透明',
+        sku_price: '13',
+        main_image_url: 'https://example.com/case.jpg',
+        length_cm: '18',
+        width_cm: '9',
+        height_cm: '2',
+        weight_g: '120',
+        sku_stock: 10,
+      }]);
+
+      expect(draft.status).toBe('ready');
+      expect(draft.items[0]).toMatchObject({
+        description_category_id: 1700,
+        type_id: 9300,
+      });
+      expect(draft.items[0].offer_id).toMatch(/^1688-/);
+
+      const result = await submitOzonDraft(flowSettings, draft, { pollDelayMs: 0 });
+      expect(result.importStatus).toBe('imported');
+      expect(fetchMock.mock.calls.map(endpointOf)).toEqual([
+        'https://api.example.test/chat/completions',
+        '/v1/description-category/attribute',
+        '/v1/description-category/attribute',
+        '/v1/description-category/attribute',
+        '/v3/product/import',
+        '/v1/product/import/info',
+      ]);
+    } finally {
+      await fs.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('imports product, polls task_id, and strips desktop-only fields', async () => {
     const fetchMock = vi.mocked(fetch);
     fetchMock
-      .mockResolvedValueOnce(ok({ result: [] }) as Response)
+      .mockResolvedValueOnce(categoryAttributeMeta())
       .mockResolvedValueOnce(ok({ result: { task_id: 8844 } }) as Response)
-      .mockResolvedValueOnce(ok({ result: { items: [{ offer_id: 'offer-1', status: 'imported' }] } }) as Response)
-      .mockResolvedValueOnce(ok({ result: [] }) as Response)
-      .mockResolvedValueOnce(ok({ result: [] }) as Response);
+      .mockResolvedValueOnce(ok({ result: { items: [{ offer_id: 'offer-1', status: 'imported' }] } }) as Response);
 
     const result = await submitOzonDraft(settings, baseDraft({
       items: [baseItem({
@@ -184,14 +267,14 @@ describe('ozon draft submit helper', () => {
       })],
     }), { pollDelayMs: 0 });
 
-    expect(result.importStatus).toBe('listing_ready');
+    expect(result.importStatus).toBe('imported');
     expect(result.taskId).toBe('8844');
+    expect(result.priceResult).toBeNull();
+    expect(result.stockResult).toBeNull();
     expect(fetchMock.mock.calls.map(endpointOf)).toEqual([
       '/v1/description-category/attribute',
       '/v3/product/import',
       '/v1/product/import/info',
-      '/v1/product/import/prices',
-      '/v2/products/stocks',
     ]);
     const importCall = fetchMock.mock.calls.find((call) => endpointOf(call) === '/v3/product/import');
     const importBody = JSON.parse(String((importCall?.[1] as RequestInit).body || '{}'));
@@ -203,14 +286,14 @@ describe('ozon draft submit helper', () => {
   it('returns pending when import info does not finish in time', async () => {
     const fetchMock = vi.mocked(fetch);
     fetchMock
-      .mockResolvedValueOnce(ok({ result: [] }) as Response)
+      .mockResolvedValueOnce(categoryAttributeMeta())
       .mockResolvedValueOnce(ok({ result: { task_id: 8844 } }) as Response)
       .mockResolvedValue(ok({ result: { items: [{ offer_id: 'offer-1', status: 'processing' }] } }) as Response);
 
     const result = await submitOzonDraft(settings, baseDraft(), { pollDelayMs: 0, pollAttempts: 2 });
 
     expect(result.importStatus).toBe('pending');
-    expect(result.warnings).toContain('Ozon 导入结果仍在处理中，尚未执行价格和库存更新。');
+    expect(result.warnings).toContain('Ozon 导入结果仍在处理中。');
     expect(fetchMock.mock.calls.map(endpointOf)).toEqual([
       '/v1/description-category/attribute',
       '/v3/product/import',
@@ -221,7 +304,7 @@ describe('ozon draft submit helper', () => {
 
   it('rejects failed import info instead of reporting success', async () => {
     vi.mocked(fetch)
-      .mockResolvedValueOnce(ok({ result: [] }) as Response)
+      .mockResolvedValueOnce(categoryAttributeMeta())
       .mockResolvedValueOnce(ok({ result: { task_id: 8844 } }) as Response)
       .mockResolvedValueOnce(ok({ result: { items: [{ offer_id: 'offer-1', status: 'failed', errors: [{ message: 'bad category' }] }] } }) as Response);
 
@@ -229,34 +312,28 @@ describe('ozon draft submit helper', () => {
       .rejects.toThrow(/Ozon 导入失败.*bad category/);
   });
 
-  it('rejects price update errors', async () => {
-    vi.mocked(fetch)
-      .mockResolvedValueOnce(ok({ result: [] }) as Response)
-      .mockResolvedValueOnce(ok({ result: { task_id: 8844 } }) as Response)
-      .mockResolvedValueOnce(ok({ result: { items: [{ offer_id: 'offer-1', status: 'imported' }] } }) as Response)
-      .mockResolvedValueOnce(ok({ result: { errors: [{ message: 'bad price' }] } }) as Response);
-
-    await expect(submitOzonDraft(settings, baseDraft(), { pollDelayMs: 0 }))
-      .rejects.toThrow(/价格更新失败.*bad price/);
-  });
-
-  it('skips stock update and warns when stock exists but warehouse is missing', async () => {
+  it('does not call separate price or stock endpoints after import', async () => {
     const fetchMock = vi.mocked(fetch);
     fetchMock
-      .mockResolvedValueOnce(ok({ result: [] }) as Response)
+      .mockResolvedValueOnce(categoryAttributeMeta())
       .mockResolvedValueOnce(ok({ result: { task_id: 8844 } }) as Response)
-      .mockResolvedValueOnce(ok({ result: { items: [{ offer_id: 'offer-1', status: 'imported' }] } }) as Response)
-      .mockResolvedValueOnce(ok({ result: [] }) as Response);
+      .mockResolvedValueOnce(ok({ result: { items: [{ offer_id: 'offer-1', status: 'imported' }] } }) as Response);
 
-    const result = await submitOzonDraft(
-      { ozon: { ...settings.ozon, defaultWarehouseId: '' } },
-      baseDraft(),
-      { pollDelayMs: 0 },
-    );
+    const result = await submitOzonDraft(settings, baseDraft(), { pollDelayMs: 0 });
+    const endpoints = fetchMock.mock.calls.map(endpointOf);
 
     expect(result.importStatus).toBe('imported');
-    expect(result.warnings).toContain('库存待配置：未设置 Ozon 仓库 ID，已跳过库存更新。');
-    expect(fetchMock.mock.calls.map(endpointOf)).not.toContain('/v2/products/stocks');
+    expect(endpoints).not.toContain('/v1/product/import/prices');
+    expect(endpoints).not.toContain('/v2/products/stocks');
+  });
+
+  it('blocks submit when category attribute metadata is empty', async () => {
+    const fetchMock = vi.mocked(fetch);
+    fetchMock.mockResolvedValueOnce(ok({ result: [] }) as Response);
+
+    await expect(submitOzonDraft(settings, baseDraft(), { pollDelayMs: 0 }))
+      .rejects.toThrow(/没有返回属性元数据/);
+    expect(fetchMock.mock.calls.map(endpointOf)).toEqual(['/v1/description-category/attribute']);
   });
 
   it('blocks submit when required category attributes are absent', async () => {

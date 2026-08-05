@@ -152,10 +152,9 @@ export default function OzonSettingsModal({ mode, open, onClose }: Props) {
           )}
 
           {isAi ? (
-            <div className="ozon-form-grid two">
-              <label><span>DeepSeek Base URL</span><input value={form.aiBaseUrl} onChange={(e) => setForm({ ...form, aiBaseUrl: e.target.value })} /></label>
-              <label><span>模型</span><input value={form.aiModel} onChange={(e) => setForm({ ...form, aiModel: e.target.value })} /></label>
-              <label className="wide"><span>DeepSeek API Key {settings?.ai.apiKeySet ? '(已保存)' : ''}</span><input type="password" value={form.aiApiKey} placeholder={settings?.ai.apiKeySet ? '留空表示不修改' : '必填'} onChange={(e) => setForm({ ...form, aiApiKey: e.target.value })} /></label>
+            <div className="ozon-form-grid" style={{ textAlign: 'center', padding: '32px 0' }}>
+              <p style={{ color: 'var(--text-secondary)', margin: 0 }}>AI 文本生成服务已内置，无需额外配置。</p>
+              <p style={{ color: 'var(--text-muted)', fontSize: '13px', margin: '8px 0 0' }}>生图 API 配置将在后续版本开放。</p>
             </div>
           ) : storeTab === 'add' ? (
             <div className="ozon-store-form">

@@ -3,6 +3,8 @@ const path = require('path');
 
 const SETTINGS_FILE = 'ozon_settings.json';
 const CATEGORY_TREE_FILE = 'ozon_category_tree.json';
+const CATEGORY_TREE_DIR = 'categories';
+const STABLE_APP_DATA_DIR = '1688ToOzonStudio';
 
 function settingsPath(userDataPath) {
   return path.join(userDataPath, SETTINGS_FILE);
@@ -22,7 +24,28 @@ function categoryTreeFileName(language) {
 }
 
 function categoryTreePath(userDataPath, language = 'ZH_HANS') {
-  return path.join(userDataPath, categoryTreeFileName(language));
+  return path.join(userDataPath, CATEGORY_TREE_DIR, categoryTreeFileName(language));
+}
+
+function categoryTreeCandidatePaths(userDataPath, language = 'ZH_HANS') {
+  const fileName = categoryTreeFileName(language);
+  const candidates = [
+    categoryTreePath(userDataPath, language),
+    path.join(userDataPath, fileName),
+    path.join(userDataPath, 'app', CATEGORY_TREE_DIR, fileName),
+  ];
+
+  if (process.env.APPDATA) {
+    candidates.push(path.join(
+      process.env.APPDATA,
+      STABLE_APP_DATA_DIR,
+      'app',
+      CATEGORY_TREE_DIR,
+      fileName,
+    ));
+  }
+
+  return Array.from(new Set(candidates));
 }
 
 function defaultSettings() {
@@ -268,7 +291,7 @@ async function getCategoryTree(userDataPath, options = {}) {
     );
   }
 
-  fs.mkdirSync(userDataPath, { recursive: true });
+  fs.mkdirSync(path.dirname(categoryTreePath(userDataPath, language)), { recursive: true });
 
   if (language === 'ZH_HANS' && isProbablyRussianCategoryTree(response.data)) {
     fs.writeFileSync(
@@ -349,6 +372,32 @@ async function searchCategories(userDataPath, query = '', options = {}) {
   };
 }
 
+// ── attribute cache ──
+
+function attributesCachePath(userDataPath, descId, typeId) {
+  return path.join(userDataPath, `${CATEGORY_TREE_DIR}/ozon_attributes_${descId}_${typeId}.json`);
+}
+
+function readAttributesCache(userDataPath, descId, typeId) {
+  try {
+    const file = attributesCachePath(userDataPath, descId, typeId);
+    if (!fs.existsSync(file)) return null;
+    const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
+    if (!raw || !Array.isArray(raw.attributes)) return null;
+    return raw;
+  } catch { return null; }
+}
+
+function writeAttributesCache(userDataPath, descId, typeId, data) {
+  try {
+    const file = attributesCachePath(userDataPath, descId, typeId);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, JSON.stringify({ ...data, cachedAt: new Date().toISOString() }, null, 2), 'utf8');
+  } catch { /* best-effort */ }
+}
+
+const ATTR_CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour
+
 async function getCategoryAttributes(userDataPath, params = {}) {
   const descriptionCategoryId = Number(params.descriptionCategoryId || params.description_category_id || 0);
   const typeId = Number(params.typeId || params.type_id || 0);
@@ -358,31 +407,66 @@ async function getCategoryAttributes(userDataPath, params = {}) {
     throw new Error('请选择带 description_category_id 和 type_id 的 Ozon 类目。');
   }
 
+  // Check cache first (within TTL).
+  const cached = readAttributesCache(userDataPath, descriptionCategoryId, typeId);
+  if (cached && cached.language === language) {
+    const age = Date.now() - new Date(cached.cachedAt || cached.fetchedAt || 0).getTime();
+    if (age < ATTR_CACHE_TTL_MS) {
+      return { ...cached, ok: true, source: 'cache' };
+    }
+  }
+
   const settings = loadSettings(userDataPath, { includeSecrets: true });
   const shop = settings.ozon || {};
+
+  // No Ozon credentials — return cached data (even expired) or empty.
   if (!shop.clientId || !shop.apiKey) {
-    throw new Error('加载 Ozon 类目特征需要先绑定 Client ID 和 API Key。');
+    if (cached) {
+      return { ...cached, ok: true, source: 'cache', message: 'Ozon 店铺未绑定，使用缓存的类目特征数据。' };
+    }
+    return {
+      ok: true,
+      descriptionCategoryId,
+      typeId,
+      attributes: [],
+      requiredCount: 0,
+      source: 'empty',
+      message: 'Ozon 店铺未绑定，无法加载类目特征。请先配置 Ozon 店铺。',
+      fetchedAt: new Date().toISOString(),
+    };
   }
 
-  const response = await callOzonSellerApi(shop, '/v1/description-category/attribute', {
-    description_category_id: descriptionCategoryId,
-    type_id: typeId,
-    language,
-  });
-  if (!response.ok) {
-    throw new Error(`加载 Ozon 类目特征失败：HTTP ${response.data?.status || '?'} ${safeJson(response.data?.response || response.data)}`);
-  }
+  try {
+    const response = await callOzonSellerApi(shop, '/v1/description-category/attribute', {
+      description_category_id: descriptionCategoryId,
+      type_id: typeId,
+      language,
+    });
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.data?.status || '?'}`);
+    }
 
-  const attributes = normalizeCategoryAttributes(response.data);
-  return {
-    ok: true,
-    descriptionCategoryId,
-    typeId,
-    attributes,
-    requiredCount: attributes.filter((attr) => attr.isRequired).length,
-    raw: response.data,
-    fetchedAt: new Date().toISOString(),
-  };
+    const attributes = normalizeCategoryAttributes(response.data);
+    const result = {
+      ok: true,
+      descriptionCategoryId,
+      typeId,
+      language,
+      attributes,
+      requiredCount: attributes.filter((attr) => attr.isRequired).length,
+      raw: response.data,
+      fetchedAt: new Date().toISOString(),
+      source: 'api',
+    };
+    writeAttributesCache(userDataPath, descriptionCategoryId, typeId, result);
+    return result;
+  } catch (e) {
+    // API failed — fall back to cache if available.
+    if (cached) {
+      return { ...cached, ok: true, source: 'cache', message: `Ozon API 请求失败（${e.message}），使用缓存数据。` };
+    }
+    throw new Error(`加载 Ozon 类目特征失败：${e.message}。请绑定 Ozon 店铺后重试。`);
+  }
 }
 
 async function getCategoryAttributeValues(userDataPath, params = {}) {
@@ -499,15 +583,21 @@ function readJsonFile(file) {
 
 function readCategoryTreeCache(userDataPath, language = 'ZH_HANS') {
   const lang = normalizeOzonLanguage(language);
-  const file = categoryTreePath(userDataPath, lang);
-  const data = readJsonFile(file);
-
-  if (data) return data;
+  for (const file of categoryTreeCandidatePaths(userDataPath, lang)) {
+    const data = readJsonFile(file);
+    if (data) return data;
+  }
 
   // Legacy cache is likely Russian — never use for Chinese UI.
   if (lang !== 'ZH_HANS') {
-    const legacy = readJsonFile(path.join(userDataPath, CATEGORY_TREE_FILE));
-    if (legacy) return legacy;
+    const legacyCandidates = [
+      path.join(userDataPath, CATEGORY_TREE_FILE),
+      path.join(userDataPath, CATEGORY_TREE_DIR, CATEGORY_TREE_FILE),
+    ];
+    for (const file of legacyCandidates) {
+      const legacy = readJsonFile(file);
+      if (legacy) return legacy;
+    }
   }
 
   return null;

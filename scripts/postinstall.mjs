@@ -2,8 +2,8 @@
 // Best-effort Chromium install. Never fail the parent npm install.
 //
 // Strategy:
-//   1. If system Chrome is installed, skip Chromium entirely
-//      (runtime uses channel:'chrome' by default).
+//   1. If Microsoft Edge is installed, skip Chromium entirely
+//      (runtime uses channel:'msedge' by default).
 //   2. If Chromium is already cached, skip.
 //   3. Auto-select mirror based on timezone — China users hit npmmirror,
 //      international users hit official. User can override.
@@ -42,41 +42,39 @@ try {
   /* ignore */
 }
 
-// ── 1. System Chrome detection ────────────────────────────────────────────
-function hasSystemChrome() {
+// ── 1. System Edge detection ──────────────────────────────────────────────
+function hasSystemEdge() {
   const candidates = {
     darwin: [
-      '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
-      '/Applications/Google Chrome Beta.app/Contents/MacOS/Google Chrome Beta',
+      '/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge',
+      '/Applications/Microsoft Edge Beta.app/Contents/MacOS/Microsoft Edge Beta',
     ],
     win32: [
       path.join(
         process.env['ProgramFiles'] ?? 'C:\\Program Files',
-        'Google/Chrome/Application/chrome.exe',
+        'Microsoft/Edge/Application/msedge.exe',
       ),
       path.join(
         process.env['ProgramFiles(x86)'] ?? 'C:\\Program Files (x86)',
-        'Google/Chrome/Application/chrome.exe',
+        'Microsoft/Edge/Application/msedge.exe',
       ),
       path.join(
         process.env['LOCALAPPDATA'] ?? '',
-        'Google/Chrome/Application/chrome.exe',
+        'Microsoft/Edge/Application/msedge.exe',
       ),
     ],
     linux: [
-      '/usr/bin/google-chrome',
-      '/usr/bin/google-chrome-stable',
-      '/usr/bin/chromium',
-      '/usr/bin/chromium-browser',
-      '/snap/bin/chromium',
+      '/usr/bin/microsoft-edge',
+      '/usr/bin/microsoft-edge-stable',
+      '/usr/bin/microsoft-edge-beta',
     ],
   }[process.platform] ?? [];
   return candidates.some((p) => p && fs.existsSync(p));
 }
 
-if (hasSystemChrome()) {
-  console.log('1688-cli: System Chrome detected. Skipping Chromium download.');
-  console.log('          (Runtime will use real Chrome via channel:"chrome".)');
+if (hasSystemEdge()) {
+  console.log('1688-cli: Microsoft Edge detected. Skipping Chromium download.');
+  console.log('          (Runtime will use Edge via channel:"msedge".)');
   process.exit(0);
 }
 
@@ -158,7 +156,7 @@ if (res.status !== 0) {
   console.log(
     '\n1688-cli: Chromium download failed (non-fatal).\n' +
       '          Try running manually:\n' +
-      '          1) Install Chrome from https://www.google.com/chrome/ (recommended), or\n' +
+      '          1) Install Microsoft Edge from https://www.microsoft.com/edge/download (recommended), or\n' +
       '          2) Force-retry with mirror:\n' +
       retryCommand,
   );

@@ -37,6 +37,167 @@ const PRODUCT_IMPORT_ITEM_KEYS = new Set([
   'width',
 ]);
 
+// ── Built-in 1688→Ozon attribute keyword mapping ──
+// Maps Chinese 1688 attribute names to Ozon attribute name keywords (CN / EN / RU).
+// Used to pre-match before calling AI, improving reliability for common attributes.
+const BUILTIN_ATTR_MAP = [
+  { cn: '材质', keys: ['材质', '成分', 'material', 'материал', '面料', '原料'] },
+  { cn: '颜色', keys: ['颜色', '色彩', 'color', 'цвет', '花色', '配色'] },
+  { cn: '尺码', keys: ['尺码', '尺寸', 'size', 'размер', '码数', '规格'] },
+  { cn: '重量', keys: ['重量', '净重', 'weight', 'вес', '毛重'] },
+  { cn: '产地', keys: ['产地', '原产地', 'country', 'страна', '制造国', '原产国', '生产地'] },
+  { cn: '风格', keys: ['风格', 'style', 'стиль', '款式'] },
+  { cn: '季节', keys: ['季节', 'season', 'сезон', '适用季节', '穿着季节'] },
+  { cn: '性别', keys: ['性别', '适用性别', 'gender', 'пол', '男女'] },
+  { cn: '袖长', keys: ['袖长', 'sleeve', 'рукав'] },
+  { cn: '衣长', keys: ['衣长', '长度', 'length', 'длина', '裤长', '裙长'] },
+  { cn: '领型', keys: ['领型', '领子', 'collar', 'ворот', '领口'] },
+  { cn: '版型', keys: ['版型', 'fit', ' silhouette', '款型', '修身', '宽松'] },
+  { cn: '厚度', keys: ['厚度', '厚薄', 'thickness', '薄款', '加厚'] },
+  { cn: '弹性', keys: ['弹性', 'elastic', '弹力'] },
+  { cn: '品牌', keys: ['品牌', 'brand', 'бренд', '商标'] },
+];
+
+function matchOzonAttrByBuiltinMap(ozonAttrName, source1688Attrs) {
+  const name = (ozonAttrName || '').toLowerCase();
+  const srcKeys = Object.keys(source1688Attrs || {}).map((k) => k.toLowerCase());
+  if (!name || !srcKeys.length) return null;
+
+  for (const entry of BUILTIN_ATTR_MAP) {
+    const ozonHit = entry.keys.some((k) => name.includes(k.toLowerCase()));
+    if (!ozonHit) continue;
+    const srcHit = entry.keys.some((k) => srcKeys.includes(k.toLowerCase()));
+    if (!srcHit) continue;
+    // Find the 1688 value for the first matching source key
+    for (const srcKey of Object.keys(source1688Attrs || {})) {
+      if (entry.keys.some((k) => srcKey.toLowerCase().includes(k.toLowerCase()))) {
+        return String(source1688Attrs[srcKey] || '').trim();
+      }
+    }
+  }
+  return null;
+}
+
+// ── Search keyword → Ozon category hint mapping ──
+// Boosts correct categories for common 1688 search terms. Each entry maps
+// a Chinese search keyword to category path hints used to re-rank candidates.
+const CATEGORY_HINTS = {
+  '西装': ['西服', '西装', '男士外套', '正装', '商务', '夹克', 'blazer', 'suit'],
+  '西服': ['西服', '西装', '男士外套', '正装', '商务'],
+  '连衣裙': ['连衣裙', '裙子', '女装', 'dress', 'платье'],
+  'T恤': ['T恤', 'T-shirt', '短袖', '上衣', '男装', '女装'],
+  '衬衫': ['衬衫', '衬衣', '上衣', '男装', '女装', 'shirt'],
+  '手机壳': ['手机壳', '手机保护', '手机配件', 'phone case'],
+  '牛仔裤': ['牛仔裤', '牛仔', '裤子', 'jeans', 'джинсы'],
+  '运动鞋': ['运动鞋', '鞋', 'sneakers', 'кроссовки', 'footwear'],
+  '背包': ['背包', '双肩包', '书包', 'backpack', 'рюкзак'],
+  '手表': ['手表', '表', 'watch', 'часы'],
+  '耳机': ['耳机', '耳塞', 'headphones', 'наушники'],
+  '充电宝': ['充电宝', '移动电源', 'power bank', '电池'],
+  '帽子': ['帽子', '帽', 'cap', 'hat', 'шапка', '头饰'],
+  '袜子': ['袜子', '袜', 'socks', 'носки'],
+  '围巾': ['围巾', '围脖', 'scarf', 'шарф'],
+  '手套': ['手套', 'gloves', 'перчатки'],
+  '拖鞋': ['拖鞋', '凉鞋', 'slippers', 'sandals'],
+  '睡衣': ['睡衣', '家居服', 'pajamas', 'sleepwear', '睡裙'],
+  '睡裙': ['睡裙', '睡衣', '家居服', 'nightgown', 'sleepwear'],
+  '内衣': ['内衣', '内裤', 'underwear', 'bra', '文胸'],
+  '泳衣': ['泳衣', '泳装', 'swimwear', '比基尼'],
+  '瑜伽服': ['瑜伽', '运动服', '健身', 'yoga', 'sportswear'],
+  '羽绒服': ['羽绒', '棉服', '棉衣', 'jacket', 'пуховик', '冬装'],
+  '毛衣': ['毛衣', '针织', 'sweater', 'свитер'],
+  '外套': ['外套', '夹克', 'jacket', 'coat', 'куртка', '风衣'],
+  '背心': ['背心', '吊带', 'vest', 'tank', 'camisole', '内搭'],
+  '吊带': ['吊带', '背心', 'camisole', '内搭'],
+  '开衫': ['开衫', '外套', 'cardigan', '针织', '毛衣'],
+  '防晒衣': ['防晒', '外套', '夹克', 'jacket', '风衣'],
+  '冲锋衣': ['冲锋衣', '外套', '夹克', 'jacket', '户外'],
+  '家居服': ['家居服', '睡衣', '居家', 'homewear', 'loungewear', '浴袍'],
+  '职业装': ['职业装', '正装', '西装', 'business', 'office', '套装'],
+  '工作服': ['工作服', '制服', '工装', 'workwear', 'uniform'],
+  'Polo衫': ['Polo', 'polo衫', 'T恤', '上衣', '衬衫'],
+  '短袖': ['短袖', 'T恤', 'T-shirt', '上衣'],
+  '长袖': ['长袖', 'T恤', '上衣', '打底衫'],
+  '打底衫': ['打底衫', '长袖', '上衣', '内搭'],
+  '休闲裤': ['休闲裤', '裤子', '长裤', 'pants', 'trousers'],
+  '阔腿裤': ['阔腿裤', '裤子', '长裤', 'pants', '女装'],
+  '短裤': ['短裤', '裤子', 'shorts', '热裤'],
+  '半身裙': ['半身裙', '裙子', 'skirt', '女装'],
+  '套装': ['套装', '两件套', 'set', 'suit', '职业装'],
+  '卫衣': ['卫衣', 'hoodie', ' sweatshirt', '运动服', '上衣'],
+  '风衣': ['风衣', '外套', 'trench', 'coat', 'jacket'],
+  '棉服': ['棉服', '棉衣', '羽绒', '冬装', 'jacket', '保暖'],
+};
+
+// Marketing noise words — stripped from search keywords before matching.
+// These are seasonal/promotional/descriptive terms that add zero signal.
+const NOISE_WORDS = new Set([
+  '夏季新款', '春季新款', '秋季新款', '冬季新款',
+  '夏季', '春季', '秋季', '冬季', '春夏', '秋冬', '春秋',
+  '新款', '爆款', '热卖', '热销', '促销', '特价',
+  '时尚', '洋气', '韩版', '日系', '欧美', '英伦', '法式',
+  '简约', '百搭', '宽松', '修身', '显瘦', '高级感', '气质',
+  '定制', '厂家', '批发', '代发', '直销', '跨境', '外贸',
+  '2025', '2026', '2024', '2023', '2027',
+  '品牌', '正品', '大码', '小个子', '大码女',
+  '一件代发', '网红', '同款', '明星',
+  '新款女', '新款男', '潮', '超好看', '温柔风', '松弛感',
+  '纯欲风', '甜心', '暗黑', '清冷', '法式度假', '松弛',
+  '新中式', '复古', '街头', '朋克', '哥特',
+  '轻薄', '加厚', '加绒', '薄款', '厚款',
+]);
+
+function stripNoiseWords(text) {
+  let result = text;
+  // Remove standalone noise tokens (sorted by length descending to match longer phrases first)
+  const sorted = [...NOISE_WORDS].sort((a, b) => b.length - a.length);
+  for (const word of sorted) {
+    result = result.replace(new RegExp(word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g'), ' ');
+  }
+  return result.replace(/\s+/g, ' ').trim();
+}
+
+function boostCandidatesByHints(candidates, keyword, sourceRows) {
+  if (!keyword || !candidates.length) return candidates;
+  let hints = CATEGORY_HINTS[normalizeCategoryText(keyword)];
+  // If stripped keyword doesn't match, try the raw title words as fallback hints
+  if (!hints) {
+    const titleText = normalizeCategoryText(
+      (Array.isArray(sourceRows) ? sourceRows : []).slice(0, 1)
+        .map((row) => `${row.product_title || ''} ${row.title || ''}`)
+        .join(' ')
+    );
+    // Try each title token against hints table
+    for (const token of titleText.split(/\s+/).filter(Boolean)) {
+      const h = CATEGORY_HINTS[token];
+      if (h) { hints = h; break; }
+    }
+  }
+  if (!hints) return candidates;
+  // Also extract hint words from 1688 product title
+  const titleText = normalizeCategoryText(
+    (Array.isArray(sourceRows) ? sourceRows : []).slice(0, 1)
+      .map((row) => `${row.product_title || ''} ${row.title || ''}`)
+      .join(' ')
+  );
+  const extraHints = hints.filter((h) => titleText.includes(normalizeCategoryText(h)));
+  const allHints = [...new Set([...hints, ...extraHints])];
+
+  return candidates.map((c) => {
+    const path = normalizeCategoryText(c.path || '');
+    const name = normalizeCategoryText(c.keyword || '');
+    let boost = 0;
+    for (const hint of allHints) {
+      const n = normalizeCategoryText(hint);
+      if (!n) continue;
+      if (name === n) boost += 200;        // exact category name match
+      else if (name.includes(n)) boost += 80;
+      else if (path.includes(n)) boost += 40;
+    }
+    return { ...c, _score: (c._score || 0) + boost };
+  }).sort((a, b) => (b._score || 0) - (a._score || 0));
+}
+
 // ── Title quality validation ──
 
 function hasSuspiciousTitleStructure(title) {
@@ -95,7 +256,6 @@ async function repairOzonTitleIfNeeded(settings, sourceRows, generated) {
 async function generateOzonDraft(settings, rows = []) {
   const sourceRows = Array.isArray(rows) ? rows.filter((row) => row && typeof row === 'object') : [];
   if (!sourceRows.length) throw new Error('没有可生成 Ozon 草稿的 1688 SKU 数据。');
-  if (!settings.ai.apiKey) throw new Error('DeepSeek API Key 未配置。');
 
   const categoryContext = resolveCategoryForDraft(settings, sourceRows);
 
@@ -119,6 +279,8 @@ async function generateOzonDraft(settings, rows = []) {
 
   const variant = buildVariantDraft(sourceRows, items, normalized);
   if (variant) {
+    // Map variant dimensions to Ozon category attributes using builtin table + name matching
+    mapVariantDimensionsToOzonAttrs(variant, normalized);
     normalized.variant_mapping = variant;
     normalized.variant_mapping_confirmed = variant.confirmed === true;
     applyVariantMetadata(items, variant);
@@ -146,7 +308,7 @@ async function generateOzonDraft(settings, rows = []) {
 async function prepareOzonImportItems(settings, items) {
   const metaByCategory = await loadAttributeMetaByCategory(settings, items);
 
-  return items.map((item) => {
+  const importItems = items.map((item) => {
     const importItem = toOzonImportItem(item);
     const key = `${Number(importItem.description_category_id || 0)}:${Number(importItem.type_id || 0)}`;
     const metaById = metaByCategory[key] || {};
@@ -172,6 +334,8 @@ async function prepareOzonImportItems(settings, items) {
 
     return importItem;
   });
+
+  return { importItems, metaByCategory };
 }
 
 async function loadAttributeMetaByCategory(settings, items) {
@@ -452,9 +616,17 @@ async function submitOzonDraft(settings, draft, options = {}) {
   if (missing.length) throw new Error(`草稿缺少必填项：${missing.join('、')}`);
 
   // Prepare & normalize attributes for Ozon API rules
-  const importItems = await prepareOzonImportItems(settings, items);
+  const { importItems, metaByCategory } = await prepareOzonImportItems(settings, items);
 
-  await validateRequiredCategoryAttributes(settings, importItems);
+  // Validate item names are in Russian before submitting
+  for (const item of importItems) {
+    const name = cleanText(item.name);
+    if (name && /[一-鿿]/.test(name) && !/[а-яё]/i.test(name)) {
+      throw new Error(`商品名称包含中文且无俄语：${name.slice(0, 60)}。请重新生成草稿获取俄语标题。`);
+    }
+  }
+
+  validateRequiredCategoryAttributes(importItems, metaByCategory);
 
   const attrStats = importItems.map((item) => ({
     offer_id: item.offer_id,
@@ -536,8 +708,7 @@ function toOzonImportItem(item) {
   return result;
 }
 
-async function validateRequiredCategoryAttributes(settings, items) {
-  const ozon = settings.ozon;
+function validateRequiredCategoryAttributes(items, metaByCategory) {
   const categoryKeys = uniqueStrings(items.map((item) => {
     const desc = Number(item.description_category_id);
     const type = Number(item.type_id);
@@ -547,12 +718,8 @@ async function validateRequiredCategoryAttributes(settings, items) {
 
   for (const key of categoryKeys) {
     const [descId, typeId] = key.split(':').map(Number);
-    const data = await callOzonSellerApi(ozon, '/v1/description-category/attribute', {
-      description_category_id: descId,
-      type_id: typeId,
-      language: 'ZH_HANS',
-    });
-    const requiredAttrs = extractRequiredAttributes(data);
+    const requiredAttrs = Object.values(metaByCategory[key] || {})
+      .filter((attr) => attr?.isRequired === true);
     if (!requiredAttrs.length) continue;
 
     for (const item of items) {
@@ -567,20 +734,6 @@ async function validateRequiredCategoryAttributes(settings, items) {
   if (uniqueMissing.length) {
     throw new Error(`草稿缺少类目必填属性：${uniqueMissing.join('、')}`);
   }
-}
-
-function extractRequiredAttributes(data) {
-  const raw = Array.isArray(data?.result) ? data.result
-    : Array.isArray(data?.attributes) ? data.attributes
-      : Array.isArray(data?.result?.attributes) ? data.result.attributes
-        : [];
-  return raw
-    .map((attr) => ({
-      id: Number(attr?.id || attr?.attribute_id),
-      name: String(attr?.name || attr?.attribute_name || attr?.id || '').trim(),
-      isRequired: attr?.is_required === true || attr?.required === true,
-    }))
-    .filter((attr) => attr.id > 0 && attr.isRequired);
 }
 
 function itemHasAttributeValue(item, attrId) {
@@ -701,33 +854,45 @@ function resolveCategoryForDraft(settings, sourceRows) {
 
   const exactCategory = findExactCategoryByKeyword(categoryIndex, keyword);
   if (exactCategory) {
-    return { keyword, exactCategory, candidates: [] };
+    return { keyword, exactCategory, candidates: [], sourceRows };
   }
 
-  const candidates = buildCategoryCandidatesByKeyword(categoryIndex, keyword, sourceRows);
-  return { keyword, exactCategory: null, candidates };
+  const rawCandidates = buildCategoryCandidatesByKeyword(categoryIndex, keyword, sourceRows);
+  const candidates = boostCandidatesByHints(rawCandidates, keyword, sourceRows);
+  return { keyword, exactCategory: null, candidates, sourceRows };
 }
 
 function extractSearchKeyword(sourceRows) {
   const rows = Array.isArray(sourceRows) ? sourceRows : [];
+  // First try explicit keyword fields from the search form
   const keys = ['search_keyword', 'searchKeyword', 'keyword', 'query', 'search_query', 'searchQuery', 'task_keyword', 'taskKeyword', '_keyword'];
   for (const row of rows) {
     if (!row || typeof row !== 'object') continue;
     for (const key of keys) {
       const value = cleanText(row[key]);
-      if (value) return value;
+      if (value) return stripNoiseWords(value);
     }
   }
+  // Fallback: extract from product title, stripping noise words first
   const first = rows[0] || {};
-  return cleanText(first.search_word || first.product_title || first.title || first.sku_name);
+  const rawTitle = cleanText(first.search_word || first.product_title || first.title || first.sku_name);
+  return stripNoiseWords(rawTitle);
 }
 
 function loadChineseCategoryIndex(settings) {
   const userDataPath = cleanText(settings?.userDataPath || settings?.paths?.userDataPath || settings?.appDataPath);
+  const fileName = 'ozon_category_tree.zh_hans.json';
   const files = [];
-  if (userDataPath) files.push(path.join(userDataPath, 'ozon_category_tree.zh_hans.json'));
-  if (process.env.APPDATA) files.push(path.join(process.env.APPDATA, '1688 to Ozon Studio', 'ozon_category_tree.zh_hans.json'));
-  for (const file of files) {
+  if (userDataPath) {
+    files.push(path.join(userDataPath, 'categories', fileName));
+    files.push(path.join(userDataPath, fileName));
+    files.push(path.join(userDataPath, 'app', 'categories', fileName));
+  }
+  if (process.env.APPDATA) {
+    files.push(path.join(process.env.APPDATA, '1688ToOzonStudio', 'app', 'categories', fileName));
+    files.push(path.join(process.env.APPDATA, '1688 to Ozon Studio', fileName));
+  }
+  for (const file of Array.from(new Set(files))) {
     const tree = readJsonFileSafe(file);
     if (!tree) continue;
     const entries = flattenChineseCategoryTree(tree);
@@ -753,7 +918,7 @@ function walkCategoryIndex(node, parents, inheritedDescriptionCategoryId, result
   const pathParts = label ? [...parents, label] : parents;
   const depth = pathParts.length;
   const pathText = pathParts.join(' / ');
-  if (depth === 3 && descriptionCategoryId && typeId && label && !containsCyrillic(pathText)) {
+  if (descriptionCategoryId && typeId && label && !containsCyrillic(pathText)) {
     result.push({
       candidate_index: result.length,
       keyword: label,
@@ -799,19 +964,42 @@ function buildCategoryCandidatesByKeyword(categoryIndex, keyword, sourceRows) {
       .map((row) => `${row.product_title || ''} ${row.title || ''} ${row.sku_name || ''}`)
       .join(' ')
   );
+
+  // Build 2-grams from keyword and title for multi-char matching
+  const kwBigrams = bigrams(normalizedKeyword);
+  const titleBigrams = bigrams(titleText);
+
   const scored = [];
   for (const entry of categoryIndex) {
     let score = 0;
     const entryName = normalizeCategoryText(entry.keyword);
+    const entryPath = normalizeCategoryText(entry.path || '');
     const entrySearch = entry.searchText;
-    if (normalizedKeyword && entryName.includes(normalizedKeyword)) score += 100;
-    if (normalizedKeyword && normalizedKeyword.includes(entryName)) score += 70;
+
+    // Exact & substring matches (whole-word level, not single char)
+    if (normalizedKeyword && entryName === normalizedKeyword) score += 100;
+    if (normalizedKeyword && entryName.includes(normalizedKeyword)) score += 80;
+    if (normalizedKeyword && normalizedKeyword.includes(entryName)) score += 60;
+    if (normalizedKeyword && entryPath.includes(normalizedKeyword)) score += 40;
     if (normalizedKeyword && entrySearch.includes(normalizedKeyword)) score += 50;
-    for (const ch of new Set(normalizedKeyword.split(''))) {
-      if (ch && entrySearch.includes(ch)) score += 1;
+
+    // Bigram overlap: keyword bigrams vs category name (requires consecutive 2-char match)
+    if (kwBigrams.length > 0) {
+      const nameBigrams = new Set(bigrams(entryName));
+      const overlap = kwBigrams.filter((bg) => nameBigrams.has(bg)).length;
+      score += overlap * 25;
     }
-    if (titleText && entrySearch.includes(titleText)) score += 10;
-    if (score > 0) scored.push({ score, entry });
+
+    // Title bigrams vs category name/path
+    if (titleBigrams.length > 0) {
+      const nameBigrams = new Set([...bigrams(entryName), ...bigrams(entryPath)]);
+      const overlap = titleBigrams.filter((bg) => nameBigrams.has(bg)).length;
+      score += overlap * 15;
+    }
+
+    if (score > 0) {
+      scored.push({ score, entry });
+    }
   }
   scored.sort((a, b) => b.score - a.score);
   return scored.slice(0, 50).map((item, index) => ({
@@ -820,7 +1008,18 @@ function buildCategoryCandidatesByKeyword(categoryIndex, keyword, sourceRows) {
     type_id: item.entry.type_id,
     path: item.entry.path,
     keyword: item.entry.keyword,
+    _score: item.score,
   }));
+}
+
+// Extract consecutive 2-character substrings for n-gram matching.
+// "西装" → ["西装"], "abc" → ["ab","bc"]
+function bigrams(text) {
+  const result = [];
+  for (let i = 0; i < text.length - 1; i++) {
+    result.push(text.slice(i, i + 2));
+  }
+  return result;
 }
 
 // ── AI messages ──
@@ -851,7 +1050,37 @@ function sourceRowsForAi(rows) {
   });
 }
 
+// Extract key product attributes to help AI understand what the product IS.
+function extractProductAttributesForCategory(row) {
+  if (!row || typeof row !== 'object') return {};
+  const attrs = row.product_attributes_structured || row.attributes || row.product_attributes || {};
+  if (typeof attrs !== 'object' || Array.isArray(attrs)) return {};
+  // Pick the most category-relevant attribute keys
+  const relevantKeys = ['材质', '面料', '成分', '风格', '款式', '版型', '适用性别', '性别', '季节', '适用季节', '品类', '类型', '用途', '功能', '领型', '袖长', '衣长', '裤长', '裙长'];
+  const picked = {};
+  for (const key of relevantKeys) {
+    const val = attrs[key];
+    if (val && typeof val === 'string' && val.trim()) picked[key] = val.trim();
+  }
+  return picked;
+}
+
 function buildMessages(rows, candidates) {
+  const sourceRowsCleaned = sourceRowsForAi(rows);
+  const firstRow = (Array.isArray(rows) ? rows[0] : null) || {};
+
+  // Build product context to help AI pick the right category
+  const productContext = {
+    title: firstRow.product_title || firstRow.title || '',
+    attributes: extractProductAttributesForCategory(firstRow),
+    search_keyword: firstRow.search_keyword || firstRow.keyword || firstRow.searchKeyword || '',
+    sku_count: Array.isArray(rows) ? rows.length : 1,
+  };
+
+  const categoryRule = candidates.length
+    ? 'Category selection rule: Read product_context carefully. Choose the ONE candidate_index whose category path best matches the product. Look at product_context.title and product_context.attributes to understand what the product IS (e.g. a suit jacket, a phone case, a dress). Then find the category_candidates entry with the most relevant path. Prefer deeper (more specific) paths. Do NOT pick based on partial character overlap alone.'
+    : 'Category selection rule: No candidates available. Return candidate_index as null.';
+
   const payload = {
     task: 'generate_ozon_listing_from_1688_desktop',
     required_schema: {
@@ -875,7 +1104,6 @@ function buildMessages(rows, candidates) {
       'Do not keep Chinese text in title_ru, description_ru, or tags.',
       'Do not invent brand, certification, warranty, or exact materials if not present.',
       'If source dimensions are missing, estimate reasonable packed dimensions.',
-      'Category selection rule: choose exactly one category_candidates item by candidate_index.',
       'Do not invent description_category_id, type_id, or category path.',
       'Only title_ru, model_name, description_ru, tags, and estimated_dimensions should be generated freely.',
     ] : [
@@ -888,7 +1116,9 @@ function buildMessages(rows, candidates) {
       'Do not invent description_category_id, type_id, or category path.',
       'Only title_ru, model_name, description_ru, tags, and estimated_dimensions should be generated freely.',
     ],
-    source_rows: sourceRowsForAi(rows),
+    source_rows: sourceRowsCleaned,
+    product_context: productContext,
+    category_selection_rule: categoryRule,
     category_candidates: candidates,
   };
   return [
@@ -1024,7 +1254,9 @@ function buildOzonItem(row, generated, settings, index) {
   // Merge backend-generated category attributes into item.attributes
   addGeneratedCategoryAttributes(attrs, generated);
   return {
-    name: generated.title_ru || String(row.product_title || row.sku_name || '').slice(0, 500),
+    name: (generated.title_ru && /[а-яё]/i.test(generated.title_ru)
+      ? generated.title_ru
+      : `Товар из 1688 ${String(cleanText(row.product_title) || cleanText(row.sku_name) || '').replace(/[^a-zA-Z0-9\s]/g, '').trim().slice(0, 80)}`).slice(0, 500),
     offer_id: stableOfferId(row, index),
     price: String(Math.max(positiveNumber(row.sku_price) || 0, 1)),
     old_price: '0',
@@ -1102,6 +1334,70 @@ function buildVariantDraft(sourceRows, items, generated) {
   };
 }
 
+// Map variant dimension source_names to Ozon category attribute IDs.
+// Uses built-in mapping table first, then name matching against category attrs.
+function mapVariantDimensionsToOzonAttrs(variant, normalized) {
+  if (!variant || !Array.isArray(variant.dimensions)) return;
+
+  // Use full category attribute definitions (stored by fillCategoryAttributes)
+  const catAttrs = Array.isArray(normalized._category_attributes)
+    ? normalized._category_attributes
+    : [];
+
+  for (const dim of variant.dimensions) {
+    if (!dim || dim.ozon_attribute_id) continue;
+    const srcName = (dim.source_name || '').trim();
+    if (!srcName) continue;
+
+    // 1. Built-in mapping: find matching Ozon attribute by keyword
+    const srcEntry = BUILTIN_ATTR_MAP.find((e) =>
+      e.keys.some((k) => srcName.toLowerCase().includes(k.toLowerCase()))
+    );
+    if (srcEntry && catAttrs.length > 0) {
+      // Search category attrs for one whose name contains the hint keywords
+      const match = catAttrs.find((a) =>
+        srcEntry.keys.some((k) => (a.name || '').toLowerCase().includes(k.toLowerCase()))
+      );
+      if (match) {
+        dim.ozon_attribute_id = Number(match.id);
+        dim.ozon_attribute_name = match.name || srcEntry.cn;
+        dim.dictionary_id = match.dictionaryId || null;
+        dim.mapping_status = 'builtin_mapped';
+        continue;
+      }
+    }
+
+    // 2. Fallback: fuzzy name match against category attribute names
+    if (catAttrs.length > 0) {
+      const fuzzy = catAttrs.find((a) =>
+        (a.name || '').toLowerCase().includes(srcName.toLowerCase())
+      );
+      if (fuzzy) {
+        dim.ozon_attribute_id = Number(fuzzy.id);
+        dim.ozon_attribute_name = fuzzy.name || '';
+        dim.dictionary_id = fuzzy.dictionaryId || null;
+        dim.mapping_status = 'fuzzy_mapped';
+        continue;
+      }
+    }
+
+    // 3. Builtin hint but no Ozon attr match
+    if (srcEntry) {
+      dim.ozon_attribute_name = srcEntry.cn;
+      dim.mapping_status = 'builtin_no_ozon_match';
+    } else {
+      dim.mapping_status = 'needs_ozon_attribute';
+    }
+  }
+
+  // Update variant status
+  const allMapped = variant.dimensions.every((d) => d.ozon_attribute_id > 0);
+  if (allMapped && variant.dimensions.length > 0) {
+    variant.status = 'mapped';
+    variant.confirmed = true;
+  }
+}
+
 function applyVariantMetadata(items, variant) {
   if (!Array.isArray(items) || !variant) return;
   const variants = Array.isArray(variant.variants) ? variant.variants : [];
@@ -1150,64 +1446,87 @@ async function fillCategoryAttributes(settings, sourceRows, normalized) {
     log(`step 1 done: ${attrs.length} attrs (non-aspect)`);
     if (!attrs.length) { log('SKIP: no attributes'); return; }
 
-    // 2. AI suggests attribute values
-    log('step 2: callAi for suggestions...');
-    const messages = buildAttributeSuggestionMessages(sourceRows, attrs, {}, { descriptionCategoryId: descId, typeId, path: category.path || '' });
-    const suggestionData = await callAi(settings.ai, messages);
-    const suggestions = normalizeAttributeSuggestions(suggestionData, attrs);
-    const attrList = suggestions.attributes || [];
-    log(`step 2 done: ${attrList.length} suggestions`);
+    // 2. Pre-match using built-in mapping table (source 1688 attrs → Ozon attrs)
+    log('step 2a: builtin attr mapping...');
+    const source1688Attrs = {};
+    for (const row of sourceRows.slice(0, 3)) {
+      if (row && typeof row === 'object') {
+        const attrs = row.product_attributes_structured || row.attributes || row.product_attributes || {};
+        Object.assign(source1688Attrs, attrs);
+      }
+    }
+    const builtinHits = [];
+    const builtinMatchedIds = new Set();
+    for (const attr of attrs) {
+      const val = matchOzonAttrByBuiltinMap(attr.name, source1688Attrs);
+      if (val) {
+        builtinHits.push({ attr, value: val });
+        builtinMatchedIds.add(Number(attr.id));
+      }
+    }
+    log(`step 2a done: ${builtinHits.length} builtin matches`);
 
-    // 3. Resolve dictionary values to Chinese
+    // 3. AI suggests for remaining (unmatched) attributes
+    const remainingAttrs = attrs.filter((a) => !builtinMatchedIds.has(Number(a.id)));
+    let aiSuggestions = [];
+    if (remainingAttrs.length > 0) {
+      log(`step 2b: callAi for ${remainingAttrs.length} remaining attrs...`);
+      try {
+        const messages = buildAttributeSuggestionMessages(sourceRows, remainingAttrs, {}, { descriptionCategoryId: descId, typeId, path: category.path || '' });
+        const suggestionData = await callAi(settings.ai, messages);
+        const suggestions = normalizeAttributeSuggestions(suggestionData, remainingAttrs);
+        aiSuggestions = suggestions.attributes || [];
+        log(`step 2b done: ${aiSuggestions.length} AI suggestions`);
+      } catch (e) {
+        log(`step 2b AI failed: ${e?.message || e}`);
+      }
+    }
+
+    // 4. Resolve dictionary values with multi-round retry
     const resolved = [];
-    for (const s of attrList) {
+    const pushResolved = (attr, valueText, dictId, src) => {
+      if (!cleanText(valueText)) return;
+      resolved.push({
+        attribute_id: attr.id,
+        value_text: cleanText(valueText),
+        dictionary_value_id: dictId || null,
+        confidence: dictId ? 0.9 : 0.5,
+        _source: src,
+      });
+    };
+
+    // 4a. Resolve builtin hits
+    for (const { attr, value } of builtinHits) {
+      if (attr.dictionaryId) {
+        const result = await resolveDictValueWithFallback(userDataPath, descId, typeId, attr, value, log);
+        if (result) pushResolved(attr, result.label, result.id, 'builtin');
+        else pushResolved(attr, value, 0, 'builtin-nodict');
+      } else {
+        pushResolved(attr, value, null, 'builtin');
+      }
+    }
+
+    // 4b. Resolve AI suggestions
+    for (const s of aiSuggestions) {
       const attr = attrs.find((a) => Number(a.id) === Number(s.attribute_id));
       if (!attr) continue;
 
       if (attr.dictionaryId) {
         const query = cleanText(s.dictionary_query || s.value_text || '');
         if (query) {
-          try {
-            const searchResp = await getCategoryAttributeValues(userDataPath, {
-              descriptionCategoryId: descId,
-              typeId,
-              attributeId: attr.id,
-              limit: 20,
-              query,
-            });
-            const searchOptions = searchResp.values || [];
-            const zhResp = await getCategoryAttributeValues(userDataPath, {
-              descriptionCategoryId: descId,
-              typeId,
-              attributeId: attr.id,
-              language: 'ZH_HANS',
-              limit: 2000,
-            });
-            const zhOptions = zhResp.values || [];
-            const matched = searchOptions[0];
-            if (matched) {
-              const zhMatch = zhOptions.find((v) => v.id === matched.id);
-              resolved.push({
-                attribute_id: attr.id,
-                value_text: zhMatch ? cleanText(zhMatch.value) : cleanText(matched.value),
-                dictionary_value_id: matched.id,
-                confidence: s.confidence || 0,
-              });
-            }
-          } catch (e) {
-            log(`dict resolve failed for attr ${attr.id}: ${e?.message || e}`);
-          }
+          const result = await resolveDictValueWithFallback(userDataPath, descId, typeId, attr, query, log);
+          if (result) pushResolved(attr, result.label, result.id, 'ai');
+          else pushResolved(attr, s.value_text, 0, 'ai-nodict');
         }
       } else {
-        const txt = cleanText(s.value_text);
-        if (txt) {
-          resolved.push({ attribute_id: attr.id, value_text: txt, confidence: s.confidence || 0 });
-        }
+        pushResolved(attr, s.value_text, null, 'ai');
       }
     }
 
-    log(`step 3 done: ${resolved.length} resolved values`);
+    log(`step 4 done: ${resolved.length} resolved values (builtin=${builtinHits.length}, ai=${aiSuggestions.length})`);
     normalized.attribute_values = resolved;
+    // Store full attribute definitions for variant dimension mapping later
+    normalized._category_attributes = attrs;
   } catch (err) {
     log(`FAILED: ${err?.message || err}\n${err?.stack || ''}`);
   }
@@ -1289,8 +1608,7 @@ function missingRequiredCategoryAttributes(item, requiredAttrs) {
 async function applyBackendDefaultsToItems(settings, userDataPath, descId, typeId, sourceRows, items, fillableAttrs, allAttrs) {
   // Origin country → 中国
   for (const attr of fillableAttrs) {
-    const name = (attr.name || '').toLowerCase();
-    if (/原产国|制造国|country|страна/.test(name)) {
+    if (/原产国|制造国|country|страна/.test((attr.name || '').toLowerCase())) {
       const resolved = await resolveSingleDictionaryValue(settings, userDataPath, descId, typeId, attr, '中国');
       const valueText = resolved ? resolved.value_text : '中国';
       const dictId = resolved ? resolved.dictionary_value_id : 0;
@@ -1304,30 +1622,69 @@ async function applyBackendDefaultsToItems(settings, userDataPath, descId, typeI
     }
   }
 
-  // Brand → NO NAME (only if not set). Search all attrs (not fillableAttrs)
-  // because brand is in CONTROLLED_ATTR_IDS and excluded from fillableAttrs.
-  const brandAttr = allAttrs.find((a) => Number(a.id) === 85);
-  if (brandAttr) {
-    let hasBrand = false;
-    for (const item of items) {
-      const attrs = Array.isArray(item?.attributes) ? item.attributes : [];
-      if (attrs.some((a) => Number(a.id) === 85 && Array.isArray(a.values) && a.values.length > 0)) hasBrand = true;
-    }
-    if (!hasBrand) {
-      // Brand is a strict dictionary attribute — must use real dictionary_value_id.
-      // "Нет бренда" (no brand) is the Ozon-recognized value for unbranded products.
-      const resolved = await resolveSingleDictionaryValue(settings, userDataPath, descId, typeId, brandAttr, 'Нет бренда');
-      if (resolved && resolved.dictionary_value_id > 0) {
-        for (const item of items) {
-          if (!item || typeof item !== 'object') continue;
-          const attrs = Array.isArray(item.attributes) ? item.attributes : [];
-          attrs.push(buildSingleAttributeEntry(85, 'Нет бренда', resolved.dictionary_value_id));
-          item.attributes = attrs;
-        }
+  // Brand → Нет бренда for ALL brand-like attributes (id=85, id=31, etc.)
+  // FORCE override — always use Нет бренда regardless of what AI or prefill set.
+  const brandAttrs = allAttrs.filter((a) => {
+    const name = (a.name || '').toLowerCase();
+    return /品牌|бренд|brand/.test(name) || Number(a.id) === 85 || Number(a.id) === 31;
+  });
+  for (const brandAttr of brandAttrs) {
+    const resolved = await resolveSingleDictionaryValue(settings, userDataPath, descId, typeId, brandAttr, 'Нет бренда');
+    if (resolved && resolved.dictionary_value_id > 0) {
+      for (const item of items) {
+        if (!item || typeof item !== 'object') continue;
+        let attrs = Array.isArray(item.attributes) ? item.attributes : [];
+        // Remove any existing brand value (AI might have set "其他")
+        attrs = attrs.filter((a) => Number(a.id) !== Number(brandAttr.id));
+        attrs.push(buildSingleAttributeEntry(brandAttr.id, 'Нет бренда', resolved.dictionary_value_id));
+        item.attributes = attrs;
       }
-      // If "Нет бренда" is not found, leave brand empty — Ozon validation will flag it.
     }
   }
+
+  // Gender → AI picks from dictionary based on 1688 source data
+  for (const attr of fillableAttrs) {
+    if (!/性别|пол|gender/.test((attr.name || '').toLowerCase())) continue;
+    let hasGender = false;
+    for (const item of items) {
+      const attrs = Array.isArray(item?.attributes) ? item.attributes : [];
+      if (attrs.some((a) => Number(a.id) === Number(attr.id) && Array.isArray(a.values) && a.values.length > 0)) hasGender = true;
+    }
+    if (!hasGender) {
+      const genderHint = inferGenderFromSource(sourceRows);
+      if (genderHint) {
+        const log = (msg) => process.stderr.write(`[ozon-draft:gender] ${msg}\n`);
+        const resolved = await resolveDictValueWithFallback(userDataPath, descId, typeId, attr, genderHint, log);
+        if (resolved && resolved.id > 0) {
+          for (const item of items) {
+            if (!item || typeof item !== 'object') continue;
+            const a = Array.isArray(item.attributes) ? item.attributes : [];
+            a.push(buildSingleAttributeEntry(attr.id, resolved.label, resolved.id));
+            item.attributes = a;
+          }
+        }
+      }
+    }
+  }
+}
+
+function inferGenderFromSource(sourceRows) {
+  const text = (Array.isArray(sourceRows) ? sourceRows : [])
+    .slice(0, 3)
+    .map((r) => `${r.product_title || ''} ${r.title || ''} ${r.sku_name || ''}`)
+    .join(' ')
+    .toLowerCase();
+  if (/女|жен|women|girl|female|lady|妈妈|姑娘|小姐|孕妇/.test(text)) return '女童';
+  if (/男|муж|men|boy|male|爸爸|先生|男士/.test(text)) return '男童';
+  if (/男女|通用|中性|унисекс|unisex/.test(text)) return '中性';
+  // Check 1688 attributes
+  for (const row of (Array.isArray(sourceRows) ? sourceRows : [])) {
+    const attrs = row.product_attributes_structured || row.attributes || {};
+    const gender = String(attrs['适用性别'] || attrs['性别'] || '');
+    if (/女/.test(gender)) return '女童';
+    if (/男/.test(gender)) return '男童';
+  }
+  return null;
 }
 
 function buildSingleAttributeEntry(attrId, valueText, dictionaryValueId) {
@@ -1353,6 +1710,74 @@ async function resolveSingleDictionaryValue(settings, userDataPath, descId, type
       dictionary_value_id: matched.id,
     };
   } catch { return null; }
+}
+
+// Multi-round dictionary resolution with fallback strategies.
+// Returns { label, id } on success, null if all rounds fail.
+async function resolveDictValueWithFallback(userDataPath, descId, typeId, attr, query, log) {
+  if (!attr.dictionaryId || !query) return null;
+
+  // Round 1: exact query from AI/builtin mapping
+  try {
+    const r1 = await getCategoryAttributeValues(userDataPath, {
+      descriptionCategoryId: descId, typeId, attributeId: attr.id, limit: 10, query,
+    });
+    if (r1.values && r1.values.length > 0) {
+      const zhResp = await getCategoryAttributeValues(userDataPath, {
+        descriptionCategoryId: descId, typeId, attributeId: attr.id, language: 'ZH_HANS', limit: 2000,
+      });
+      const zhOpts = zhResp.values || [];
+      const m = r1.values[0];
+      const zh = zhOpts.find((v) => v.id === m.id);
+      return { label: zh ? cleanText(zh.value) : cleanText(m.value), id: m.id };
+    }
+  } catch (e) { log(`dict round1 failed: ${e?.message || e}`); }
+
+  // Round 2: simplified query — first 2 words only
+  const simplified = query.split(/[\s,;，；]+/).slice(0, 2).join(' ');
+  if (simplified && simplified !== query) {
+    try {
+      const r2 = await getCategoryAttributeValues(userDataPath, {
+        descriptionCategoryId: descId, typeId, attributeId: attr.id, limit: 20, query: simplified,
+      });
+      if (r2.values && r2.values.length > 0) {
+        const zhResp = await getCategoryAttributeValues(userDataPath, {
+          descriptionCategoryId: descId, typeId, attributeId: attr.id, language: 'ZH_HANS', limit: 2000,
+        });
+        const zhOpts = zhResp.values || [];
+        const m = r2.values[0];
+        const zh = zhOpts.find((v) => v.id === m.id);
+        return { label: zh ? cleanText(zh.value) : cleanText(m.value), id: m.id };
+      }
+    } catch (e) { log(`dict round2 failed: ${e?.message || e}`); }
+  }
+
+  // Round 3: fetch full list and fuzzy-match by substring
+  try {
+    const r3 = await getCategoryAttributeValues(userDataPath, {
+      descriptionCategoryId: descId, typeId, attributeId: attr.id, language: 'ZH_HANS', limit: 500,
+    });
+    const opts = r3.values || [];
+    if (opts.length > 0) {
+      const q = query.toLowerCase();
+      // Score: exact match > startsWith > includes
+      let best = null, bestScore = 0;
+      for (const v of opts) {
+        const label = (v.value || '').toLowerCase();
+        let score = 0;
+        if (label === q) score = 100;
+        else if (label.startsWith(q)) score = 70;
+        else if (label.includes(q)) score = 40;
+        else if (q.includes(label)) score = 20;
+        if (score > bestScore) { bestScore = score; best = v; }
+      }
+      if (best && bestScore >= 20) {
+        return { label: cleanText(best.value), id: best.id };
+      }
+    }
+  } catch (e) { log(`dict round3 failed: ${e?.message || e}`); }
+
+  return null;
 }
 
 async function generateMissingAttributeSuggestions(settings, sourceRows, normalized, missingAttrs, allAttrs) {
@@ -1419,7 +1844,7 @@ function hasUnconfirmedVariantMapping(draft) {
   if (sourceRows.length <= 1) return false;
   const variant = variantMappingOf(draft, generated);
   if (variant.confirmed === true || variant.status === 'confirmed' || variant.status === 'not_required') return false;
-  return false;
+  return true;
 }
 
 function variantMappingOf(draft, generated) {
@@ -1611,7 +2036,6 @@ async function generateOzonAttributeSuggestions(settings, params = {}) {
   const currentForm = params.form && typeof params.form === 'object' ? params.form : {};
   const category = params.category && typeof params.category === 'object' ? params.category : {};
 
-  if (!settings.ai.apiKey) throw new Error('DeepSeek API Key 未配置。');
   if (!sourceRows.length) throw new Error('缺少 1688 商品数据，无法生成类目特征建议。');
   if (!categoryAttributes.length) throw new Error('缺少 Ozon 类目特征列表。');
 

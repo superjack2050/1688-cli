@@ -295,6 +295,10 @@ export async function executeRaw(
         `Failed to load offer page: ${(e as Error).message}`,
       );
     }
+    // Captcha/punish page — abort immediately, don't wait for timeout
+    if (/\/punish|x5secdata=/.test(page.url())) {
+      throw new CliError(104, 'CAPTCHA_INTERCEPT', 'Captcha page detected — skipping immediately');
+    }
     if (/login\.1688\.com|login\.taobao\.com/.test(page.url())) {
       throw new CliError(
         3,

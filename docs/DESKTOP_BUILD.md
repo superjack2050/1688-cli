@@ -74,7 +74,7 @@ environment so Electron can execute Node.js CLI scripts correctly.
 
 The packaged app bundles `node_modules/` (including playwright) but does NOT
 bundle Playwright's Chromium browser binary (~150 MB). Employees must have
-Google Chrome or Microsoft Edge installed. Playwright uses `channel: 'chrome'`
+Microsoft Edge installed. Playwright uses `channel: 'msedge'`
 to detect the system browser.
 
 ## Account Status Mapping

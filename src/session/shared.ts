@@ -11,6 +11,10 @@ import { acquireLock } from './lock.js';
 import { CliError } from '../io/errors.js';
 import { clearStaleSingleton } from './context.js';
 import {
+  isPreferredBrowserUnavailable,
+  PREFERRED_BROWSER_CHANNEL,
+} from './browser-preference.js';
+import {
   enrichErrorWithArtifact,
   type RunMeta,
 } from './artifacts.js';
@@ -57,7 +61,7 @@ export async function getSharedContext(profile?: string): Promise<BrowserContext
   const dir = profilePath(profileName);
   await fs.mkdir(dir, { recursive: true });
   await clearStaleSingleton(dir);
-  sharedCtx = await launchPreferringChrome(dir, true);
+  sharedCtx = await launchPreferringEdge(dir, true);
   sharedProfile = profileName;
   await sharedCtx.addInitScript(() => {
     try {
@@ -152,7 +156,7 @@ export async function recreateSharedContext(): Promise<void> {
     const dir = profilePath(profile);
     await fs.mkdir(dir, { recursive: true });
     await clearStaleSingleton(dir);
-    sharedCtx = await launchPreferringChrome(dir, true);
+    sharedCtx = await launchPreferringEdge(dir, true);
     sharedProfile = profile;
     await sharedCtx.addInitScript(() => {
       try {
@@ -166,25 +170,20 @@ export async function recreateSharedContext(): Promise<void> {
   }
 }
 
-async function launchPreferringChrome(
+async function launchPreferringEdge(
   dir: string,
   headless: boolean,
 ): Promise<BrowserContext> {
-  const useChrome = process.env.BB1688_FORCE_CHROMIUM !== '1';
-  if (useChrome) {
+  const useEdge = process.env.BB1688_FORCE_CHROMIUM !== '1';
+  if (useEdge) {
     try {
       return (await chromium.launchPersistentContext(dir, {
         ...LAUNCH_OPTS,
         headless,
-        channel: 'chrome',
+        channel: PREFERRED_BROWSER_CHANNEL,
       })) as BrowserContext;
     } catch (e) {
-      const msg = (e as Error).message ?? '';
-      if (
-        !/Chromium\?|channel|Executable doesn't exist|chrome.*not found/i.test(
-          msg,
-        )
-      ) {
+      if (!isPreferredBrowserUnavailable(e)) {
         throw e;
       }
     }

@@ -10,7 +10,11 @@ export function progressCardToOzonRows(item: ProgressOfferCardItem): Row[] {
   const images = imageList(raw, item.image);
   const attributes = attributesObject(raw.attributes);
   const packages = packageMap(raw.packageInfo);
-  const skus = Array.isArray(raw.skus) ? raw.skus.map(objectOf).filter(Boolean) : [];
+  let skus = Array.isArray(raw.skus) ? raw.skus.map(objectOf).filter(Boolean) : [];
+  // Filter to only selected SKUs (set by SkuSelectModal, never mutates raw data)
+  if (item._selectedSkuIds && item._selectedSkuIds.size > 0) {
+    skus = skus.filter((s) => item._selectedSkuIds!.has(String(s.skuId ?? '')));
+  }
 
   if (skus.length === 0) {
     return [baseRow({

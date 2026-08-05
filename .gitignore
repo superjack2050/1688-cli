@@ -32,3 +32,6 @@ scripts/check-chat.mjs
 !.env.example
 *.pem
 *.key
+
+# Built-in AI config (contains API key)
+apps/desktop/builtin-ai-config.json

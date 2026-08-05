@@ -58,7 +58,7 @@ npm i -g 1688-cli
 现有的 1688 自动化方案很重：需要自己维护 Selenium 胶水代码、浏览器插件没法 pipe 到
 shell、MCP server 跟 agent 工具链打架。`1688-cli` 一个命令搞定：
 
-- **底层是真 Chrome**（`channel:'chrome'`）。跟你手动用的浏览器一样 — session 是真实的，
+- **底层是真 Microsoft Edge**（`channel:'msedge'`）。跟你手动用的浏览器一样 — session 是真实的，
   不是虚拟 Chromium。
 - **持久化 profile** 存在 `~/.1688/` 下。一次登录管几周，多个买家 profile 互相隔离。
 - **Profile 级 daemon** — 每个 profile 维护一个预热浏览器 context，后续命令复用，无需

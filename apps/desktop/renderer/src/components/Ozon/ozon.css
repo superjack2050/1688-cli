@@ -586,6 +586,8 @@
 /* ── Ozon product workspace ── */
 .ozon-product-page {
   min-height: calc(100vh - 120px);
+  min-width: 0;
+  width: 100%;
   display: flex;
   flex-direction: column;
   gap: 16px;
@@ -661,16 +663,19 @@
 
 .ozon-products-stats {
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
-  gap: 10px;
+  min-width: 0;
+  width: 100%;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 8px;
 }
 
 .ozon-products-stat {
   position: relative;
-  min-height: 76px;
+  min-width: 0;
+  min-height: 58px;
   border: 1px solid rgba(148,163,184,0.20);
   border-radius: 18px;
-  padding: 14px 16px;
+  padding: 10px 12px;
   text-align: left;
   cursor: pointer;
   background: rgba(255,255,255,0.86);
@@ -680,10 +685,10 @@
 .ozon-products-stat::before {
   content: "";
   position: absolute;
-  left: 16px;
-  top: 13px;
-  width: 7px;
-  height: 7px;
+  left: 12px;
+  top: 12px;
+  width: 6px;
+  height: 6px;
   border-radius: 50%;
   background: #64748b;
 }
@@ -695,7 +700,7 @@
 
 .ozon-products-stat span {
   display: block;
-  padding-left: 14px;
+  padding-left: 12px;
   color: #64748b;
   font-size: 12px;
   font-weight: 850;
@@ -703,9 +708,9 @@
 
 .ozon-products-stat strong {
   display: block;
-  margin-top: 10px;
+  margin-top: 6px;
   color: #0f172a;
-  font-size: 26px;
+  font-size: 20px;
   line-height: 1;
   font-weight: 950;
 }

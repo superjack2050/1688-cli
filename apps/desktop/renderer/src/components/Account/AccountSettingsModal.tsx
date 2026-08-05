@@ -18,6 +18,11 @@ export default function AccountSettingsModal({ accounts, activeProfile, open, on
   const [msg, setMsg] = useState('');
   const [editingProfile, setEditingProfile] = useState<string | null>(null);
   const [editValue, setEditValue] = useState('');
+  const [showAddForm, setShowAddForm] = useState(false);
+  const [addAlias, setAddAlias] = useState('');
+  const [addProfile, setAddProfile] = useState('');
+  const [addNote, setAddNote] = useState('');
+  const [addSaving, setAddSaving] = useState(false);
   const api = getApi();
 
   const handleLoginBrowser = async (profile: string) => {
@@ -62,6 +67,31 @@ export default function AccountSettingsModal({ accounts, activeProfile, open, on
     } catch (e) { setMsg((e as Error).message); }
   };
 
+  const openAddForm = async () => {
+    setEditingProfile(null);
+    setAddAlias('');
+    setAddNote('');
+    setAddSaving(false);
+    setMsg('');
+    try { setAddProfile(await api.accounts.suggestProfileName()); } catch { setAddProfile(''); }
+    setShowAddForm(true);
+  };
+
+  const handleAddSave = async () => {
+    if (!addAlias.trim()) { setMsg('账号备注名不能为空'); return; }
+    if (!addProfile.trim()) { setMsg('Profile ID 不能为空'); return; }
+    setAddSaving(true);
+    setMsg('正在创建账号...');
+    try {
+      await api.accounts.add({ profile: addProfile.trim(), alias: addAlias.trim(), note: addNote.trim() });
+      setShowAddForm(false);
+      await onAccountsChanged();
+      setMsg(`账号 ${addAlias.trim()} 已创建，正在打开登录浏览器...`);
+      await handleLoginBrowser(addProfile.trim());
+    } catch (e) { setMsg((e as Error).message); }
+    finally { setAddSaving(false); }
+  };
+
   if (!open) return null;
 
   return createPortal(
@@ -73,12 +103,36 @@ export default function AccountSettingsModal({ accounts, activeProfile, open, on
         </div>
 
         <div style={{ display: 'flex', gap: 6, marginBottom: 14, flexWrap: 'wrap' }}>
-          <button className="glass-btn-secondary" onClick={() => { onClose(); setTimeout(() => setEditingProfile('__new__'), 100); }} style={{ fontSize: 12 }}>新增账号</button>
+          <button className="glass-btn-secondary" onClick={openAddForm} style={{ fontSize: 12 }}>新增账号</button>
           <button className="glass-btn-secondary" onClick={handleLoginAllBrowser} style={{ fontSize: 12 }}>全部打开登录浏览器</button>
           <button className="glass-btn-secondary" onClick={handleRefreshAll} style={{ fontSize: 12 }}>全部刷新状态</button>
         </div>
 
         {msg && <p className="alert info" style={{ fontSize: 12 }}>{msg}</p>}
+
+        {/* Inline add-account form */}
+        {showAddForm && (
+          <div className="history-row" style={{ padding: '14px', marginBottom: 12, border: '1px solid var(--accent)', borderRadius: 8, display: 'flex', gap: 10, alignItems: 'flex-end', flexWrap: 'wrap' }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 2, minWidth: 140 }}>
+              <span style={{ fontSize: 11, color: '#888' }}>账号备注名 *</span>
+              <input className="glass-input" style={{ width: 150 }} value={addAlias} onChange={(e) => setAddAlias(e.target.value)} placeholder="例如：张三-主采集号" autoFocus />
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 2, minWidth: 120 }}>
+              <span style={{ fontSize: 11, color: '#888' }}>Profile ID *</span>
+              <input className="glass-input" style={{ width: 140 }} value={addProfile} onChange={(e) => setAddProfile(e.target.value)} placeholder="自动生成" />
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 2, minWidth: 120 }}>
+              <span style={{ fontSize: 11, color: '#888' }}>备注</span>
+              <input className="glass-input" style={{ width: 140 }} value={addNote} onChange={(e) => setAddNote(e.target.value)} placeholder="选填" />
+            </div>
+            <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+              <button className="glass-btn-primary" style={{ fontSize: 12, padding: '5px 14px' }} onClick={handleAddSave} disabled={addSaving}>
+                {addSaving ? '保存中...' : '保存并登录'}
+              </button>
+              <button className="glass-btn-ghost" style={{ fontSize: 12, padding: '5px 10px' }} onClick={() => setShowAddForm(false)}>取消</button>
+            </div>
+          </div>
+        )}
 
         <div style={{ maxHeight: '60vh', overflowY: 'auto', paddingRight: 4 }}>
           {accounts.accounts.map((a) => (

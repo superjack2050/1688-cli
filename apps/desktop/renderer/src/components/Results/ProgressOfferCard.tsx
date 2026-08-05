@@ -22,6 +22,7 @@ export interface ProgressOfferCardItem {
   attempts?: number;
   pendingDeep?: boolean;
   raw?: unknown;
+  _selectedSkuIds?: Set<string>;
 }
 
 interface Props {
@@ -260,7 +261,7 @@ export default function ProgressOfferCard({ item, onOpen, onDeepCollect, onOzonP
               if (!actionsDisabled && isClickable) onOzonPlaceholder?.(item);
             }}
           >
-            生成 Ozon 草稿
+            生成草稿
           </button>
         </div>
       </div>

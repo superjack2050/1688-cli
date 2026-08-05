@@ -5,7 +5,6 @@ import {
   CommandDef,
   CommandPayload,
   CommandRecord,
-  AccountData,
   type OzonCategoryEntry,
   type OzonCategoryRawNode,
 } from '../../services/api';
@@ -20,7 +19,6 @@ import '../../components/Results/results.css';
 interface Props {
   registry: CommandRegistry;
   activeProfile: string;
-  accounts: AccountData;
   onHistoryRefresh: () => void;
   onDeepTasksChange?: (tasks: DeepCollectTask[]) => void;
   onOzonTasksChange?: (tasks: OzonListingTask[]) => void;
@@ -39,6 +37,31 @@ interface CommandUiSnapshot {
   pastedImagePreviewUrl: string | null;
   pastedImageName: string | null;
   pastedImageSize: number | null;
+}
+
+const VISIBLE_SOURCING_COMMAND_IDS = new Set(['search', 'offer', 'imageSearch']);
+const HIDDEN_SEARCH_OPTION_IDS = new Set(['province', 'city', 'verified', 'minTurnover', 'deeppro']);
+
+function normalizeOptionsForCommand(
+  commandId: string,
+  source: Record<string, unknown>,
+): Record<string, unknown> {
+  const next = { ...source };
+  if (commandId === 'search') {
+    for (const optionId of HIDDEN_SEARCH_OPTION_IDS) delete next[optionId];
+    next.deeppro = true;
+  }
+  return next;
+}
+
+function defaultOptionsForCommand(cmd?: CommandDef): Record<string, unknown> {
+  const defaults: Record<string, unknown> = {};
+  if (!cmd) return defaults;
+  for (const option of cmd.options ?? []) {
+    if (option.type === 'boolean' && option.default) defaults[option.name] = true;
+    else if (option.default !== undefined && option.default !== '') defaults[option.name] = option.default;
+  }
+  return normalizeOptionsForCommand(cmd.id, defaults);
 }
 
 function objectOf(value: unknown): Record<string, unknown> | null {
@@ -136,12 +159,12 @@ function keywordSearchTokens(query: string): string[] {
     .filter(Boolean);
 }
 
-function isThirdLevelKeywordNode(node: KeywordCategoryTreeNode): boolean {
-  return node.selectable && node.depth === 3;
+function isSelectableKeywordNode(node: KeywordCategoryTreeNode): boolean {
+  return node.selectable;
 }
 
-function thirdLevelNodeMatchesKeyword(node: KeywordCategoryTreeNode, tokens: string[]): boolean {
-  if (!isThirdLevelKeywordNode(node)) return false;
+function selectableNodeMatchesKeyword(node: KeywordCategoryTreeNode, tokens: string[]): boolean {
+  if (!isSelectableKeywordNode(node)) return false;
   if (!tokens.length) return true;
 
   const haystack = normalizeKeywordSearchText([
@@ -166,7 +189,7 @@ function filterKeywordCategoryTree(
 
   for (const node of nodes) {
     const children = filterKeywordCategoryTree(node.children, query);
-    const selfMatched = thirdLevelNodeMatchesKeyword(node, tokens);
+    const selfMatched = selectableNodeMatchesKeyword(node, tokens);
 
     if (selfMatched || children.length > 0) {
       result.push({
@@ -324,7 +347,7 @@ function KeywordCategoryTreeList({
         return (
           <div key={node.id} className="keyword-category-tree-node">
             <div
-              className={`keyword-category-tree-row level-${level + 1} ${isThirdLevelKeywordNode(node) ? 'selectable' : ''}`}
+              className={`keyword-category-tree-row level-${level + 1} ${isSelectableKeywordNode(node) ? 'selectable' : ''}`}
               style={{ paddingLeft: `${level * 24 + 8}px` }}
             >
               <button
@@ -362,13 +385,15 @@ function KeywordCategoryTreeList({
   );
 }
 
-export default function CommandPanel({ registry, activeProfile, accounts, onHistoryRefresh, onDeepTasksChange, onOzonTasksChange, onBatchActionsReady }: Props) {
+export default function CommandPanel({ registry, activeProfile, onHistoryRefresh, onDeepTasksChange, onOzonTasksChange, onBatchActionsReady }: Props) {
   const [activeCmdId, setActiveCmdId] = useState('search');
   const activeCmdIdRef = useRef(activeCmdId);
   activeCmdIdRef.current = activeCmdId;
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [args, setArgs] = useState<Record<string, string>>({});
-  const [options, setOptions] = useState<Record<string, unknown>>({});
+  const [options, setOptions] = useState<Record<string, unknown>>(
+    () => defaultOptionsForCommand(registry.commands.search),
+  );
   const [running, setRunning] = useState(false);
   const [runningCommandId, setRunningCommandId] = useState<string | null>(null);
   const runningCommandIdRef = useRef<string | null>(runningCommandId);
@@ -396,6 +421,7 @@ export default function CommandPanel({ registry, activeProfile, accounts, onHist
   const [showKeywordCategories, setShowKeywordCategories] = useState(false);
   const [keywordCategoryTreeNodes, setKeywordCategoryTreeNodes] = useState<KeywordCategoryTreeNode[]>([]);
   const [keywordCategoryTreeLoading, setKeywordCategoryTreeLoading] = useState(false);
+  const [keywordCategoryTreeMessage, setKeywordCategoryTreeMessage] = useState('');
   const [showKeywordCategoryTree, setShowKeywordCategoryTree] = useState(true);
   const [expandedKeywordCategoryIds, setExpandedKeywordCategoryIds] = useState<Record<string, boolean>>({});
 
@@ -450,9 +476,7 @@ export default function CommandPanel({ registry, activeProfile, accounts, onHist
   const command = registry.commands[activeCmdId];
   const commandPositionals = command?.positional ?? [];
   const commandOptions = command?.options ?? [];
-  const groupCommands = Object.values(registry.commands).filter((c) => c.group === 'sourcing' && c.id !== 'similar');
-  const activeAccount = accounts.accounts.find((a) => a.profile === activeProfile);
-  const alias = activeAccount?.alias || activeProfile;
+  const groupCommands = Object.values(registry.commands).filter((c) => c.group === 'sourcing' && VISIBLE_SOURCING_COMMAND_IDS.has(c.id));
   const hasEmbeddedRunButton = commandPositionals.some((f) => f.name === 'keyword');
   const isImageSearchCommand = activeCmdId === 'imageSearch';
   const isAny1688TaskRunning = Boolean(runningCommandId) || deepQueueBusy;
@@ -493,45 +517,26 @@ export default function CommandPanel({ registry, activeProfile, accounts, onHist
     onDeepTasksChange?.(tasks);
   };
 
+  const visibleCommandOptions = commandOptions.filter(
+    (option) => activeCmdId !== 'search' || !HIDDEN_SEARCH_OPTION_IDS.has(option.name),
+  );
+
   const previewArgv = useMemo(() => {
     if (!command) return '';
     const parts = ['1688', ...String(command.argvPreview || command.id || '').split(' ').filter(Boolean)];
+    const effectiveOptions = normalizeOptionsForCommand(activeCmdId, options);
     for (const f of commandPositionals) {
       const v = args[f.name] || '';
       parts.push(...v.split(/[\r\n,]+/).filter(Boolean));
     }
     for (const o of commandOptions) {
-      const v = options[o.name];
+      const v = effectiveOptions[o.name];
       if (o.type === 'boolean') { if (v) parts.push(o.flag); }
       else if (String(v ?? '').trim()) parts.push(o.flag, String(v).trim());
     }
     parts.push('--profile', activeProfile, '--json', '--pretty');
     return parts.join(' ');
   }, [command, commandOptions, commandPositionals, args, options, activeProfile]);
-
-  const chineseHint = useMemo(() => {
-    if (activeCmdId === 'search') {
-      const kw = args.keyword || '';
-      if (!kw.trim()) return '请先填写搜索词。';
-      return `当前任务：使用「${alias}」账号，在 1688 搜索"${kw}"，输出结构化数据。`;
-    }
-    if (activeCmdId === 'offer') {
-      const ids = args.offerIds || '';
-      if (!ids.trim()) return '请先填写 Offer ID。';
-      return `当前任务：使用「${alias}」账号，采集商品详情：${ids.split(/[\r\n,]+/).filter(Boolean).join('、')}。`;
-    }
-    return `当前任务：使用「${alias}」账号执行「${command?.label || activeCmdId}」。`;
-  }, [activeCmdId, args, alias, command]);
-
-  const defaultOptionsForCommand = (cmd?: CommandDef): Record<string, unknown> => {
-    const defs: Record<string, unknown> = {};
-    if (!cmd) return defs;
-    for (const o of cmd.options ?? []) {
-      if (o.type === 'boolean' && o.default) defs[o.name] = true;
-      else if (o.default !== undefined && o.default !== '') defs[o.name] = o.default;
-    }
-    return defs;
-  };
 
   const currentSnapshot = (): CommandUiSnapshot => ({
     args,
@@ -675,7 +680,7 @@ export default function CommandPanel({ registry, activeProfile, accounts, onHist
 
     if (targetSnapshot) {
       setArgs(targetSnapshot.args);
-      setOptions(targetSnapshot.options);
+      setOptions(normalizeOptionsForCommand(id, targetSnapshot.options));
       setLastRecord(targetSnapshot.lastRecord);
       setFieldErrors(targetSnapshot.fieldErrors);
       setAlert(targetSnapshot.alert);
@@ -704,7 +709,7 @@ export default function CommandPanel({ registry, activeProfile, accounts, onHist
   const collectPayload = (confirmed = false): CommandPayload => ({
     commandId: activeCmdId,
     args,
-    options,
+    options: normalizeOptionsForCommand(activeCmdId, options),
     profile: activeProfile,
     confirmed,
   });
@@ -757,7 +762,7 @@ export default function CommandPanel({ registry, activeProfile, accounts, onHist
     const runCommandId = activeCmdId;
     const isRunActive = () => activeCmdIdRef.current === runCommandId;
     const runArgs = { ...args };
-    const runOptions = { ...options };
+    const runOptions = normalizeOptionsForCommand(activeCmdId, options);
     const max = Number(options.max || 20);
     if (!max || max < 1) return;
     setPlaceholderCount(max);
@@ -892,7 +897,7 @@ export default function CommandPanel({ registry, activeProfile, accounts, onHist
     const runCommandId = activeCmdId;
     const isRunActive = () => activeCmdIdRef.current === runCommandId;
     const runArgs = { ...args };
-    const runOptions = { ...options };
+    const runOptions = normalizeOptionsForCommand(activeCmdId, options);
     if (!beginCommandRun(runCommandId)) return;
     if (command.write && !confirmed) {
       finishCommandRun(runCommandId);
@@ -902,7 +907,7 @@ export default function CommandPanel({ registry, activeProfile, accounts, onHist
     }
 
     // Desktop DEEPPRO: two-stage orchestration
-    if (activeCmdId === 'search' && options.deeppro === true) {
+    if (activeCmdId === 'search') {
       try {
         await runDesktopDeepPro();
       } catch (e) {
@@ -1021,11 +1026,6 @@ export default function CommandPanel({ registry, activeProfile, accounts, onHist
     return '已执行';
   }, [visibleRecord]);
 
-  const fillKeyword = (kw: string) => {
-    setArgs({ ...args, keyword: kw });
-    if (fieldErrors.keyword) { const e = { ...fieldErrors }; delete e.keyword; setFieldErrors(e); }
-  };
-
   const fillKeywordFromCategory = (entry: OzonCategoryEntry) => {
     const keyword = String(entry.keyword || entry.path || '').trim();
     if (!keyword) return;
@@ -1050,9 +1050,13 @@ export default function CommandPanel({ registry, activeProfile, accounts, onHist
       const treeNodes = buildKeywordCategoryTree(roots);
 
       setKeywordCategoryTreeNodes(treeNodes);
+      setKeywordCategoryTreeMessage(
+        response.message || (treeNodes.length ? `已加载 ${response.total || treeNodes.length} 个 Ozon 可选类目。` : '类目树为空，请同步最新类目。'),
+      );
       setExpandedKeywordCategoryIds({});
     } catch (error) {
       setKeywordCategoryTreeNodes([]);
+      setKeywordCategoryTreeMessage(error instanceof Error ? error.message : String(error));
     } finally {
       setKeywordCategoryTreeLoading(false);
     }
@@ -1063,7 +1067,7 @@ export default function CommandPanel({ registry, activeProfile, accounts, onHist
   }
 
   function fillKeywordFromTreeNode(node: KeywordCategoryTreeNode) {
-    if (!isThirdLevelKeywordNode(node)) {
+    if (!isSelectableKeywordNode(node)) {
       toggleKeywordCategoryNode(node.id);
       return;
     }
@@ -1107,13 +1111,8 @@ export default function CommandPanel({ registry, activeProfile, accounts, onHist
 
   return (
     <div className="command-workspace">
-      {/* ── Header panel: title + tabs + task picker ── */}
+      {/* ── Header panel: task picker ── */}
       <section className="command-header-panel">
-        <div className="section-head">
-          <h3>命令面板</h3>
-          <span>{chineseHint}</span>
-        </div>
-
         <div className="command-picker">
           <span className="command-picker-label">任务类型</span>
           <div className="command-segmented-picker">
@@ -1189,6 +1188,9 @@ export default function CommandPanel({ registry, activeProfile, accounts, onHist
 
                             {showKeywordCategoryTree && (
                               <div className="keyword-category-tree-panel">
+                                {keywordCategoryTreeMessage && (
+                                  <div className="keyword-category-hint">{keywordCategoryTreeMessage}</div>
+                                )}
                                 {visibleKeywordCategoryTree.length > 0 ? (
                                   <KeywordCategoryTreeList
                                     nodes={visibleKeywordCategoryTree}
@@ -1198,7 +1200,7 @@ export default function CommandPanel({ registry, activeProfile, accounts, onHist
                                   />
                                 ) : (
                                   <div className="keyword-category-empty">
-                                    未找到匹配的三级类目。
+                                    {keywordCategoryTreeMessage || '未找到匹配的可选类目。'}
                                   </div>
                                 )}
                               </div>
@@ -1276,9 +1278,9 @@ export default function CommandPanel({ registry, activeProfile, accounts, onHist
           )}
 
           {/* Short fields — compact grid */}
-          {commandOptions.filter((o) => o.type !== 'boolean' && !isDeepProAdvancedOption(o.name)).length > 0 && (
+          {visibleCommandOptions.filter((o) => o.type !== 'boolean' && !isDeepProAdvancedOption(o.name)).length > 0 && (
             <div className="compact-grid">
-              {commandOptions.filter((o) => o.type !== 'boolean' && !isDeepProAdvancedOption(o.name)).map((o) => {
+              {visibleCommandOptions.filter((o) => o.type !== 'boolean' && !isDeepProAdvancedOption(o.name)).map((o) => {
                 if (o.type === 'select') {
                   return (
                     <div key={o.name} className="form-field compact">
@@ -1307,7 +1309,7 @@ export default function CommandPanel({ registry, activeProfile, accounts, onHist
           )}
 
           {/* Option chips + command actions */}
-          {(commandOptions.filter((o) => o.type === 'boolean').length > 0 || !hasEmbeddedRunButton || command.id === 'search') && (
+          {(visibleCommandOptions.filter((o) => o.type === 'boolean').length > 0 || !hasEmbeddedRunButton || command.id === 'search') && (
             <div className="command-action-row">
               {!hasEmbeddedRunButton && (
                 <div className="command-run-actions">
@@ -1324,7 +1326,7 @@ export default function CommandPanel({ registry, activeProfile, accounts, onHist
                   </button>
                 </div>
               )}
-              {commandOptions.filter((o) => o.type === 'boolean').map((o) => (
+              {visibleCommandOptions.filter((o) => o.type === 'boolean').map((o) => (
                 <button key={o.name} type="button"
                   className={`glass-toggle-chip ${options[o.name] ? 'active' : ''}`}
                   onClick={() => setOptions({ ...options, [o.name]: !options[o.name] })}
@@ -1336,8 +1338,7 @@ export default function CommandPanel({ registry, activeProfile, accounts, onHist
                 <button
                   type="button"
                   className={`glass-toggle-chip ${options.captchaRetryHeaded ? 'active' : ''}`}
-                  disabled={!options.deeppro}
-                  title={options.deeppro ? '第一次无头采集遇到验证码/风控时，第二次自动打开浏览器供人工处理' : '请先勾选"采集商品详情"'}
+                  title="第一次无头采集遇到验证码/风控时，第二次自动打开浏览器供人工处理"
                   onClick={() => setOptions({ ...options, captchaRetryHeaded: !options.captchaRetryHeaded })}
                 >
                   验证码自动开浏览器
@@ -1346,9 +1347,9 @@ export default function CommandPanel({ registry, activeProfile, accounts, onHist
             </div>
           )}
 
-          {/* Advanced: deeppro extended params, collapsed unless deeppro is on */}
+          {/* Advanced detail-collection parameters */}
           {command.id === 'search' && commandOptions.filter((o) => isDeepProAdvancedOption(o.name)).length > 0 && (
-            <details className="advanced-section" open={!!options.deeppro}>
+            <details className="advanced-section">
               <summary className="advanced-toggle">高级采集参数</summary>
               <p className="advanced-hint">敏感类目或出现 deeppro 全部失败时，尝试切换为 daemon 模式。</p>
               <div className="compact-grid" style={{ marginTop: 10 }}>
@@ -1453,12 +1454,6 @@ export default function CommandPanel({ registry, activeProfile, accounts, onHist
               输入搜索词后，系统会采集商品标题、价格、供应商、地区、<br/>
               成交数据、SKU / 库存 / 属性、商品图片。
             </p>
-            <p className="empty-hint">建议先测试：</p>
-            <div className="empty-actions">
-              <button className="glass-btn-secondary" onClick={() => fillKeyword('上衣')}>上衣</button>
-              <button className="glass-btn-secondary" onClick={() => fillKeyword('帽子')}>帽子</button>
-              <button className="glass-btn-secondary" onClick={() => fillKeyword('手机壳')}>手机壳</button>
-            </div>
           </div>
         )}
       </section>

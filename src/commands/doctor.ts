@@ -14,6 +14,10 @@ import { readState } from '../session/state.js';
 import { emit } from '../io/output.js';
 import { CliError } from '../io/errors.js';
 import { appendEvent, readRecentEvents } from '../session/events.js';
+import {
+  PREFERRED_BROWSER_CHANNEL,
+  PREFERRED_BROWSER_LABEL,
+} from '../session/browser-preference.js';
 import pkg from '../../package.json' with { type: 'json' };
 
 export interface VersionInfo {
@@ -307,24 +311,24 @@ async function checkStateFile(profile: string): Promise<Check> {
 }
 
 async function checkChromiumLaunch(): Promise<Check> {
-  // Mirror runtime preference: try system Chrome first (channel:'chrome'),
+  // Mirror runtime preference: try system Edge first (channel:'msedge'),
   // fall back to bundled Chromium. Either being launchable is acceptable.
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'bb1688-doctor-'));
-  const preferChrome = process.env.BB1688_FORCE_CHROMIUM !== '1';
+  const preferEdge = process.env.BB1688_FORCE_CHROMIUM !== '1';
 
-  async function tryLaunch(opts: { channel?: 'chrome' }): Promise<string> {
+  async function tryLaunch(opts: { channel?: typeof PREFERRED_BROWSER_CHANNEL }): Promise<string> {
     const ctx = await chromium.launchPersistentContext(tmp, {
       headless: true,
       ...opts,
     });
     await ctx.close();
-    return opts.channel === 'chrome' ? 'Chrome' : 'bundled Chromium';
+    return opts.channel === PREFERRED_BROWSER_CHANNEL ? PREFERRED_BROWSER_LABEL : 'bundled Chromium';
   }
 
   try {
-    if (preferChrome) {
+    if (preferEdge) {
       try {
-        const which = await tryLaunch({ channel: 'chrome' });
+        const which = await tryLaunch({ channel: PREFERRED_BROWSER_CHANNEL });
         return {
           name: 'browser launch',
           status: 'ok',
@@ -346,7 +350,7 @@ async function checkChromiumLaunch(): Promise<Check> {
       name: 'browser launch',
       status: 'fail',
       message: first,
-      fix: 'Install Chrome from https://www.google.com/chrome/ OR run: npx playwright install chromium',
+      fix: 'Install Microsoft Edge from https://www.microsoft.com/edge/download OR run: npx playwright install chromium',
     };
   } finally {
     await fs.rm(tmp, { recursive: true, force: true });

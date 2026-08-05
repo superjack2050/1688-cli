@@ -985,12 +985,12 @@ function categorySearchTokens(query: string): string[] {
     .filter(Boolean);
 }
 
-function isThirdLevelCategoryNode(node: CategoryTreeViewNode): boolean {
-  return node.selectable && node.depth === 3;
+function isSelectableCategoryNode(node: CategoryTreeViewNode): boolean {
+  return node.selectable;
 }
 
-function thirdLevelCategoryNodeMatches(node: CategoryTreeViewNode, tokens: string[]): boolean {
-  if (!isThirdLevelCategoryNode(node)) return false;
+function selectableCategoryNodeMatches(node: CategoryTreeViewNode, tokens: string[]): boolean {
+  if (!isSelectableCategoryNode(node)) return false;
   if (!tokens.length) return true;
 
   const haystack = normalizeCategorySearchText([
@@ -1015,7 +1015,7 @@ function filterCategoryTree(
 
   for (const node of nodes) {
     const children = filterCategoryTree(node.children, query);
-    const selfMatched = thirdLevelCategoryNodeMatches(node, tokens);
+    const selfMatched = selectableCategoryNodeMatches(node, tokens);
 
     if (selfMatched || children.length > 0) {
       result.push({
@@ -1065,14 +1065,14 @@ function CategoryTreeList({
         return (
           <div key={node.id} className="ozon-category-tree-node">
             <div
-              className={`ozon-category-tree-row level-${level + 1} ${isThirdLevelCategoryNode(node) ? 'selectable' : ''}`}
+              className={`ozon-category-tree-row level-${level + 1} ${isSelectableCategoryNode(node) ? 'selectable' : ''}`}
               style={{ paddingLeft: `${level * 24 + 8}px` }}
             >
               <button
                 type="button"
                 className="ozon-category-tree-toggle"
                 onClick={() => hasChildren ? onToggle(node.id) : onSelect(node)}
-                disabled={!hasChildren && !isThirdLevelCategoryNode(node)}
+                disabled={!hasChildren && !isSelectableCategoryNode(node)}
                 title={hasChildren ? '展开/收起' : ''}
               >
                 {hasChildren ? (isExpanded ? '▾' : '▸') : '•'}
@@ -1120,6 +1120,7 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onTo
   const [attemptedFeatures, setAttemptedFeatures] = useState(false);
   const [categoryTreeNodes, setCategoryTreeNodes] = useState<CategoryTreeViewNode[]>([]);
   const [categoryTreeLoading, setCategoryTreeLoading] = useState(false);
+  const [categoryTreeMessage, setCategoryTreeMessage] = useState('');
   const [showCategoryTree, setShowCategoryTree] = useState(true);
   const [expandedCategoryIds, setExpandedCategoryIds] = useState<Record<string, boolean>>({});
   const [dictionaryValueIds, setDictionaryValueIds] = useState<DictionaryValueIds>(() => attributeDictionaryIdsById(firstItemOf(task)));
@@ -1499,9 +1500,13 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onTo
       const treeNodes = buildCategoryTreeView(roots);
 
       setCategoryTreeNodes(treeNodes);
+      setCategoryTreeMessage(
+        response.message || (treeNodes.length ? `已加载 ${response.total || treeNodes.length} 个 Ozon 可选类目。` : '类目树为空，请同步最新类目。'),
+      );
       setExpandedCategoryIds({});
     } catch (error) {
       setCategoryTreeNodes([]);
+      setCategoryTreeMessage(error instanceof Error ? error.message : String(error));
     } finally {
       setCategoryTreeLoading(false);
     }
@@ -1512,7 +1517,7 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onTo
   }
 
   function applyCategoryTreeNode(node: CategoryTreeViewNode) {
-    if (!isThirdLevelCategoryNode(node)) {
+    if (!isSelectableCategoryNode(node)) {
       toggleCategoryNode(node.id);
       return;
     }
@@ -1700,6 +1705,9 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onTo
 
                 {showCategoryTree && (
                   <div className="ozon-category-tree-panel">
+                    {categoryTreeMessage && (
+                      <div className="ozon-category-tree-hint">{categoryTreeMessage}</div>
+                    )}
                     {visibleCategoryTree.length > 0 ? (
                       <CategoryTreeList
                         nodes={visibleCategoryTree}
@@ -1709,7 +1717,7 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onTo
                       />
                     ) : (
                       <div className="ozon-category-empty">
-                        未找到匹配的三级类目。
+                        {categoryTreeMessage || '未找到匹配的可选类目。'}
                       </div>
                     )}
                   </div>

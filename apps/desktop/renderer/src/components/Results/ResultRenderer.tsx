@@ -3,6 +3,7 @@ import { getApi, CommandRecord } from '../../services/api';
 import { shouldDefaultCard } from '../../services/offer-adapter';
 import ProgressOfferCard, { toProgressCards, ProgressOfferCardItem } from './ProgressOfferCard';
 import OfferDetailModal from './OfferDetailModal';
+import SkuSelectModal, { extractSkuEntries } from './SkuSelectModal';
 import ProgressSummary from './ProgressSummary';
 import { mergeDeepCollectData } from './deepCollect/jsonMerge';
 import { getDeepCollectSessionSnapshot, hasDeepCollectSessionState, useDeepCollectQueue } from './deepCollect/useDeepCollectQueue';
@@ -148,6 +149,7 @@ export default function ResultRenderer({ record, resultType, placeholderCards, r
   );
   const [toast, setToast] = useState('');
   const [detailItem, setDetailItem] = useState<ProgressOfferCardItem | null>(null);
+  const [skuModalItem, setSkuModalItem] = useState<ProgressOfferCardItem | null>(null);
   const [selectedKeys, setSelectedKeys] = useState<Set<string>>(() => new Set());
   const [cardOverrides, setCardOverrides] = useState<Record<string, Partial<ProgressOfferCardItem>>>(() => initialDeepSession.cardOverrides);
   const [deepJsonByOfferId, setDeepJsonByOfferId] = useState<Record<string, Record<string, unknown>>>(() => initialDeepSession.deepJsonByOfferId);
@@ -292,6 +294,15 @@ export default function ResultRenderer({ record, resultType, placeholderCards, r
     autoDeepCollectOnMount ||
     Boolean((baseData?.deeppro as Record<string, unknown> | undefined)?.mode === 'queued-in-renderer');
 
+  // Stable refs to prevent the auto-deep-collect timer from being cleared
+  // by re-renders triggered by resetDeepCollectQueue or cardOverrides changes.
+  const visibleCardsRef = useRef(visibleCards);
+  visibleCardsRef.current = visibleCards;
+  const enqueueMultipleDeepCollectRef = useRef(enqueueMultipleDeepCollect);
+  enqueueMultipleDeepCollectRef.current = enqueueMultipleDeepCollect;
+  const showToastRef = useRef(showToast);
+  showToastRef.current = showToast;
+
   useEffect(() => {
     if (!shouldAutoDeepCollect) return;
     if (!record?.runId) return;
@@ -304,7 +315,10 @@ export default function ResultRenderer({ record, resultType, placeholderCards, r
     if (autoDeepCollectRunRef.current === runId) return;
 
     const timer = window.setTimeout(() => {
-      const autoCards = visibleCards.filter((card) => Boolean(card.offerId));
+      const cards = visibleCardsRef.current;
+      const enqueue = enqueueMultipleDeepCollectRef.current;
+      const toast = showToastRef.current;
+      const autoCards = cards.filter((card) => Boolean(card.offerId));
 
       if (autoCards.length === 0) return;
       if (autoDeepCollectStartedRunIds.has(runId) && hasDeepCollectSessionState(deepSessionKey)) return;
@@ -313,12 +327,12 @@ export default function ResultRenderer({ record, resultType, placeholderCards, r
       autoDeepCollectStartedRunIds.add(runId);
       autoDeepCollectRunRef.current = runId;
 
-      showToast(`已自动加入 ${autoCards.length} 个商品到深采队列`, 1600);
-      enqueueMultipleDeepCollect(autoCards);
+      toast(`已自动加入 ${autoCards.length} 个商品到深采队列`, 1600);
+      enqueue(autoCards);
     }, 250);
 
     return () => window.clearTimeout(timer);
-  }, [shouldAutoDeepCollect, record?.runId, visibleCards, enqueueMultipleDeepCollect, showToast]);
+  }, [shouldAutoDeepCollect, record?.runId]);
 
   const deeppro = data?.deeppro as Record<string, unknown> | undefined;
   const deepproFailures = (deeppro?.failures as Array<Record<string, unknown>>) || [];
@@ -411,7 +425,15 @@ export default function ResultRenderer({ record, resultType, placeholderCards, r
               selected={selectedKeys.has(cardKey(card))}
               onSelectToggle={toggleSelect}
               onDeepCollect={enqueueSingleDeepCollect}
-              onOzonPlaceholder={enqueueSingleOzonListing}
+              onOzonPlaceholder={(item) => {
+                const raw = (item.raw || {}) as Record<string, unknown>;
+                const skus = Array.isArray(raw.skus) ? raw.skus : [];
+                if (skus.length > 1) {
+                  setSkuModalItem(item);
+                } else {
+                  enqueueSingleOzonListing(item);
+                }
+              }}
               actionsDisabled={taskActionsDisabled}
               onOpen={(item) => {
                 if (item.offerId || item.raw || item.title || item.image) {
@@ -463,6 +485,23 @@ export default function ResultRenderer({ record, resultType, placeholderCards, r
       {/* Detail modal */}
       {detailItem && (
         <OfferDetailModal item={detailItem} onClose={() => setDetailItem(null)} />
+      )}
+
+      {/* SKU select modal — shown before generating Ozon draft */}
+      {skuModalItem && (
+        <SkuSelectModal
+          open={!!skuModalItem}
+          title={skuModalItem.title || ''}
+          mainImage={skuModalItem.image || null}
+          skus={extractSkuEntries(skuModalItem)}
+          onConfirm={(selectedIds) => {
+            // Store selected SKU IDs on the item — do NOT mutate raw.skus
+            skuModalItem._selectedSkuIds = new Set(selectedIds);
+            setSkuModalItem(null);
+            enqueueSingleOzonListing(skuModalItem);
+          }}
+          onCancel={() => setSkuModalItem(null)}
+        />
       )}
 
       {toast && <div className="toast">{toast}</div>}

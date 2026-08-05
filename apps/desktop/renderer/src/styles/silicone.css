@@ -141,6 +141,7 @@ button {
 .workspace-inner,
 .workspace-view-panel {
   background: transparent !important;
+  min-width: 0;
 }
 
 .workspace-inner {
@@ -843,9 +844,10 @@ button {
 }
 
 .ozon-products-stat {
-  border-radius: 18px !important;
-  min-height: 82px !important;
-  padding: 16px 18px !important;
+  border-radius: 16px !important;
+  min-height: 58px !important;
+  min-width: 0 !important;
+  padding: 10px 12px !important;
   box-shadow: var(--lg-shadow-soft) !important;
 }
 
@@ -866,7 +868,7 @@ button {
 }
 
 .ozon-products-stats {
-  gap: 12px !important;
+  gap: 8px !important;
 }
 
 .ozon-products-toolbar {

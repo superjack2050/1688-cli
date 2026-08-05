@@ -10,9 +10,13 @@ import {
   enrichErrorWithArtifact,
   type RunMeta,
 } from './artifacts.js';
+import {
+  isPreferredBrowserUnavailable,
+  PREFERRED_BROWSER_CHANNEL,
+} from './browser-preference.js';
 
 /**
- * Remove Chrome's stale SingletonLock / SingletonCookie / SingletonSocket files
+ * Remove the browser's stale SingletonLock / SingletonCookie / SingletonSocket files
  * from our profile dir. Safe because our `proper-lockfile` already guarantees
  * no other 1688 process is using this profile.
  */
@@ -80,24 +84,19 @@ async function launchContext(
   dir: string,
   headless: boolean,
 ): Promise<BrowserContext> {
-  // Prefer real Chrome — best fingerprint match (real UA, real GPU, real
-  // plugins). Falls back to bundled Chromium if Chrome isn't installed.
-  const preferChrome = process.env.BB1688_FORCE_CHROMIUM !== '1';
-  if (preferChrome) {
+  // Prefer the installed Microsoft Edge channel and fall back to bundled
+  // Chromium only when Edge is unavailable.
+  const preferEdge = process.env.BB1688_FORCE_CHROMIUM !== '1';
+  if (preferEdge) {
     try {
       return (await chromium.launchPersistentContext(dir, {
         ...LAUNCH_OPTS,
         headless,
-        channel: 'chrome',
+        channel: PREFERRED_BROWSER_CHANNEL,
       })) as BrowserContext;
     } catch (e) {
-      const msg = (e as Error).message ?? '';
-      // Re-throw unknown errors; only fall through if Chrome is missing.
-      if (
-        !/Chromium\?|channel|Executable doesn't exist|chrome.*not found/i.test(
-          msg,
-        )
-      ) {
+      // Re-throw unknown errors; only fall through if Edge is missing.
+      if (!isPreferredBrowserUnavailable(e)) {
         throw e;
       }
     }

@@ -60,7 +60,7 @@ Existing 1688 automation options are heavy: Selenium glue you maintain, browser
 extensions you can't pipe into a shell, MCP servers that fight with your
 agent's tooling. `1688-cli` is a single command:
 
-- **Real Chrome under the hood** (`channel:'chrome'`). Same browser you'd
+- **Real Microsoft Edge under the hood** (`channel:'msedge'`). Same browser you'd
   use manually — your session is real, not a synthetic Chromium.
 - **Persistent profiles** under `~/.1688/`. One login lasts for weeks, and
   multiple buyer profiles can stay isolated.

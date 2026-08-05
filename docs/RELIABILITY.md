@@ -6,14 +6,15 @@ and recoverable for agents.
 
 ## Daemon
 
-Each daemon routes commands for one profile through one persistent Chromium
-context. Different profiles use different daemon processes, locks, sockets or
+Each daemon routes commands for one profile through one persistent Microsoft
+Edge context, with bundled Chromium as the missing-browser fallback. Different
+profiles use different daemon processes, locks, sockets or
 named pipes, pid/version/log files, state files, and persistent browser
 directories.
 
 Benefits:
 
-- Saves Chrome cold-start time.
+- Saves Edge cold-start time.
 - Keeps one continuous logged-in session per profile.
 - Adds inter-command jitter.
 - Allows different profiles to run at the same time without sharing one
