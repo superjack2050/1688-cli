@@ -802,222 +802,172 @@
 
 .ozon-products-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(360px, 1fr));
-  gap: 14px;
+  grid-template-columns: repeat(auto-fill, minmax(230px, 260px));
+  justify-content: start;
+  align-items: stretch;
+  gap: 16px;
 }
+
+/* ── Vertical compact Ozon product card ── */
 
 .ozon-product-card {
-  display: grid;
-  grid-template-columns: 92px minmax(0, 1fr);
-  gap: 16px;
-  min-height: 232px;
-  padding: 14px;
+  display: flex;
+  flex-direction: column;
   border-radius: 18px;
   border: 1px solid rgba(148,163,184,0.18);
-  background: #fff;
+  background: rgba(255,255,255,0.88);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
   box-shadow: 0 8px 22px rgba(15,23,42,0.05);
+  cursor: pointer;
+  overflow: hidden;
+  transition: transform 0.18s, box-shadow 0.18s;
+}
+.ozon-product-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 14px 32px rgba(15,23,42,0.10);
 }
 
-.ozon-product-card--draft { border-color: rgba(37,99,235,0.22); }
-.ozon-product-card--success { border-color: rgba(34,197,94,0.26); }
+.ozon-product-card--draft  { border-color: rgba(37,99,235,0.22); }
+.ozon-product-card--success    { border-color: rgba(34,197,94,0.26); }
 .ozon-product-card--processing { border-color: rgba(37,99,235,0.22); }
-.ozon-product-card--manual { border-color: rgba(245,158,11,0.30); }
-.ozon-product-card--failed { border-color: rgba(239,68,68,0.30); }
+.ozon-product-card--manual     { border-color: rgba(245,158,11,0.30); }
+.ozon-product-card--failed     { border-color: rgba(239,68,68,0.30); }
 
-.ozon-product-thumb-wrap {
-  width: 92px;
-  min-width: 92px;
+/* ── Image wrap (1:1) ── */
+
+.ozon-product-card-image-wrap {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  overflow: hidden;
 }
 
-.ozon-product-thumb {
-  width: 92px;
-  height: 92px;
+.ozon-product-card-img {
+  width: 100%;
+  height: 100%;
   display: block;
-  object-fit: cover;
-  border-radius: 14px;
-  background: #f1f5f9;
+  object-fit: contain;
+  background: #fff;
 }
-
-.ozon-product-thumb.placeholder {
+.ozon-product-card-img.placeholder {
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 4px;
-  border: 1px solid rgba(148,163,184,0.18);
+  gap: 6px;
+  border: 1px solid rgba(148,163,184,0.14);
   color: #64748b;
   font-size: 11px;
-  font-weight: 850;
-  line-height: 1.15;
+  font-weight: 750;
   text-align: center;
 }
-
-.ozon-product-thumb.placeholder svg {
-  width: 42px;
-  height: 42px;
+.ozon-product-card-img.placeholder svg {
+  width: 44px;
+  height: 44px;
   flex: 0 0 auto;
 }
 
-.ozon-product-thumb.placeholder span {
-  max-width: 78px;
-  overflow-wrap: anywhere;
-}
+/* ── Status badge overlay ── */
 
-.ozon-product-main {
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  min-height: 204px;
-}
-
-.ozon-product-title-row {
-  display: flex;
-  flex-direction: column;
-  gap: 7px;
-  align-items: flex-start;
-}
-
-.ozon-product-title-row h3 {
-  margin: 0;
-  width: 100%;
-  min-height: 40px;
-  max-height: 40px;
-  overflow: hidden;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  color: #0f172a;
-  font-size: 14px;
-  line-height: 1.42;
-  font-weight: 850;
-  word-break: break-all;
-}
-
-.ozon-product-status {
-  height: 25px;
-  max-width: 112px;
-  padding: 0 9px;
-  border-radius: 999px;
+.ozon-product-card-status-badge {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  height: 24px;
+  max-width: calc(100% - 16px);
   display: inline-flex;
   align-items: center;
-  justify-content: center;
-  font-size: 11px;
-  font-weight: 900;
-  white-space: nowrap;
-}
-
-.ozon-product-status--success { color: #15803d; background: rgba(220,252,231,0.92); }
-.ozon-product-status--draft { color: #1d4ed8; background: rgba(219,234,254,0.92); }
-.ozon-product-status--processing { color: #2563eb; background: rgba(219,234,254,0.92); }
-.ozon-product-status--manual { color: #b45309; background: rgba(254,243,199,0.94); }
-.ozon-product-status--failed { color: #dc2626; background: rgba(254,226,226,0.94); }
-
-.ozon-product-meta,
-.ozon-product-source {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 6px;
-  color: #64748b;
+  padding: 0 10px;
+  border-radius: 999px;
   font-size: 12px;
-  font-weight: 750;
-}
-
-.ozon-product-meta span,
-.ozon-product-source span,
-.ozon-product-source strong,
-.ozon-product-source a {
-  min-height: 22px;
-  display: inline-flex;
-  align-items: center;
-  border-radius: 999px;
-  padding: 0 8px;
-  background: #f8fafc;
-  color: #64748b;
-  text-decoration: none;
-}
-
-.ozon-product-source strong {
-  color: #0f172a;
-  max-width: 160px;
+  font-weight: 800;
+  white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  white-space: nowrap;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  box-shadow: 0 2px 8px rgba(15,23,42,0.08);
 }
 
-.ozon-product-source a {
-  color: #2563eb;
-}
+.ozon-product-card-status-badge--success    { color: #15803d; background: rgba(220,252,231,0.88); }
+.ozon-product-card-status-badge--draft      { color: #1d4ed8; background: rgba(219,234,254,0.88); }
+.ozon-product-card-status-badge--processing { color: #2563eb; background: rgba(219,234,254,0.88); }
+.ozon-product-card-status-badge--manual     { color: #b45309; background: rgba(254,243,199,0.90); }
+.ozon-product-card-status-badge--failed     { color: #dc2626; background: rgba(254,226,226,0.90); }
 
-.ozon-product-missing,
-.ozon-product-message {
-  max-height: 40px;
-  overflow: hidden;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  border-radius: 12px;
-  padding: 7px 9px;
-  font-size: 12px;
-  line-height: 1.35;
-  font-weight: 750;
-  word-break: break-all;
-  color: #334155;
-}
+/* ── Body (title + actions) ── */
 
-.ozon-product-missing {
-  color: #92400e;
-  background: rgba(254,243,199,0.88);
-  border: 1px solid rgba(217,119,6,0.18);
-}
-
-.ozon-product-message--success { color: #15803d; background: rgba(220,252,231,0.62); }
-.ozon-product-message--draft { color: #1d4ed8; background: rgba(219,234,254,0.72); }
-.ozon-product-message--processing { color: #2563eb; background: rgba(219,234,254,0.62); }
-.ozon-product-message--manual { color: #92400e; background: rgba(254,243,199,0.88); }
-.ozon-product-message--failed { color: #b91c1c; background: rgba(254,226,226,0.90); }
-
-.ozon-product-actions {
-  grid-column: 1 / -1;
+.ozon-product-card-body {
+  flex: 1;
   display: flex;
-  justify-content: flex-end;
-  align-items: center;
+  flex-direction: column;
+  padding: 10px 12px 12px;
+  gap: 8px;
+}
+
+.ozon-product-card-title {
+  margin: 0;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  overflow: hidden;
+  word-break: break-word;
+  color: #0f172a;
+  font-size: 14px;
+  line-height: 1.45;
+  font-weight: 700;
+  min-height: 60px;
+}
+
+/* ── Actions row ── */
+
+.ozon-product-card-actions {
+  display: flex;
   gap: 8px;
   margin-top: auto;
-  padding-top: 8px;
 }
 
-.ozon-product-actions button,
-.ozon-products-empty button,
-.ozon-product-detail-head button,
-.ozon-product-detail-actions button {
-  min-height: 32px;
-  min-width: 0;
-  border: 1px solid rgba(148,163,184,0.22);
+.ozon-product-card-btn {
+  flex: 1;
+  min-height: 38px;
+  border: 1px solid rgba(148,163,184,0.20);
   border-radius: 999px;
-  padding: 5px 10px;
+  padding: 6px 10px;
   background: #f8fafc;
   color: #0f172a;
   font-size: 12px;
-  font-weight: 850;
-  line-height: 1.15;
-  white-space: normal;
+  font-weight: 800;
   cursor: pointer;
+  white-space: nowrap;
 }
-
-.ozon-product-actions button:first-child,
-.ozon-products-empty button,
-.ozon-product-detail-actions button:first-child {
-  color: #1d4ed8;
-  background: rgba(219,234,254,0.72);
-  border-color: rgba(37,99,235,0.18);
+.ozon-product-card-btn:hover {
+  background: #f1f5f9;
 }
-
-.ozon-product-actions button:disabled,
-.ozon-product-detail-actions button:disabled {
+.ozon-product-card-btn:disabled {
   cursor: not-allowed;
   opacity: 0.45;
+}
+
+.ozon-product-card-btn--inspect {
+  color: #1d4ed8;
+  background: rgba(219,234,254,0.72);
+  border-color: rgba(37,99,235,0.16);
+}
+.ozon-product-card-btn--inspect:hover {
+  background: rgba(219,234,254,0.90);
+}
+
+.ozon-product-card-btn--submit {
+  color: #fff;
+  background: linear-gradient(135deg, #2563eb, #1d4ed8);
+  border-color: transparent;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.28), 0 8px 20px rgba(37,99,235,0.22);
+}
+
+.ozon-product-card-btn--copy {
+  color: #475569;
+  background: rgba(255,255,255,0.74);
 }
 
 .ozon-products-empty {
@@ -2457,9 +2407,6 @@
   .ozon-products-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .ozon-products-toolbar { grid-template-columns: 1fr; }
   .ozon-products-grid { grid-template-columns: 1fr; }
-  .ozon-product-card { grid-template-columns: 78px minmax(0, 1fr); }
-  .ozon-product-thumb-wrap,
-  .ozon-product-thumb { width: 78px; min-width: 78px; height: 78px; }
   .ozon-product-detail-panel--visual { width: calc(100vw - 24px); padding: 14px; }
   .ozon-draft-visual-head { align-items: flex-start; flex-direction: column; }
   .ozon-draft-score { width: 100%; flex-basis: auto; }

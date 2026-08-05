@@ -1,6 +1,5 @@
 import React, { useEffect, useState } from 'react';
 import type { OzonListingTask, OzonListingTaskStatus } from '../Results/ozonListing/types';
-import { formatOzonTaskDisplayMessage } from './ozonError';
 
 export type OzonProductStatusGroup = 'draft' | 'success' | 'processing' | 'manual' | 'failed';
 
@@ -43,7 +42,7 @@ export function statusLabelOf(status: OzonListingTaskStatus): string {
     queued: '排队中',
     waiting_deep_collect: '等待深采',
     deep_collecting: '深采中',
-    generating_draft: '生成草稿中',
+    generating_draft: '生成中',
     draft_ready: '草稿已生成',
     import_pending: '导入中',
     imported: '已导入',
@@ -53,7 +52,6 @@ export function statusLabelOf(status: OzonListingTaskStatus): string {
     failed: '失败',
     submit_failed: '提交失败',
   };
-
   return map[status];
 }
 
@@ -72,39 +70,10 @@ function text(value: unknown): string {
   return String(value).trim();
 }
 
-function priceOf(task: OzonListingTask): string {
-  const row = firstRow(task);
-  const item = firstItem(task);
-  const value = task.price || text(row.sku_price) || text(item.price);
-  if (!value) return '暂无价格';
-  if (/^[\d.]+$/.test(value)) return `¥${value}`;
-  return value;
-}
-
-function categoryOf(task: OzonListingTask): string {
-  const generated = task.draft?.generated || {};
-  const matched = generated.matched_category as Record<string, unknown> | undefined;
-  return text(matched?.path) || text(firstItem(task)._category_path) || '未匹配类目';
-}
-
-function updateTimeOf(task: OzonListingTask): string {
-  const value = task.updatedAt || task.finishedAt || task.createdAt;
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return '--';
-  return date.toLocaleString('zh-CN', {
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-  });
-}
-
 export default function OzonProductCard({ task, onInspect, onCopyDraft, onSubmitDraft }: Props) {
   const [imageFailed, setImageFailed] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const statusGroup = statusGroupOf(task.status);
-  const message = formatOzonTaskDisplayMessage(task);
-  const sourceUrl = task.sourceUrl || text(firstRow(task).detail_url);
   const title = task.title || text(firstRow(task).product_title) || text(firstItem(task).name) || task.offerId || '未命名商品';
 
   useEffect(() => {
@@ -112,12 +81,16 @@ export default function OzonProductCard({ task, onInspect, onCopyDraft, onSubmit
   }, [task.image]);
 
   return (
-    <article className={`ozon-product-card ozon-product-card--${statusGroup}`}>
-      <div className="ozon-product-thumb-wrap">
+    <article
+      className={`ozon-product-card ozon-product-card--${statusGroup}`}
+      onClick={() => onInspect(task)}
+      title={title}
+    >
+      <div className="ozon-product-card-image-wrap">
         {task.image && !imageFailed ? (
-          <img className="ozon-product-thumb" src={task.image} alt="" onError={() => setImageFailed(true)} />
+          <img className="ozon-product-card-img" src={task.image} alt="" onError={() => setImageFailed(true)} />
         ) : (
-          <div className="ozon-product-thumb placeholder">
+          <div className="ozon-product-card-img placeholder">
             <svg viewBox="0 0 48 48" aria-hidden="true">
               <rect x="9" y="10" width="30" height="28" rx="8" fill="rgba(219,234,254,0.78)" />
               <path d="M16 29l7-7 5 5 3-3 6 6" fill="none" stroke="rgba(37,99,235,0.58)" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />
@@ -126,68 +99,33 @@ export default function OzonProductCard({ task, onInspect, onCopyDraft, onSubmit
             <span>{task.image ? '图片加载失败' : '暂无图片'}</span>
           </div>
         )}
+        <span className={`ozon-product-card-status-badge ozon-product-card-status-badge--${statusGroup}`}>
+          {statusLabelOf(task.status)}
+        </span>
       </div>
 
-      <div className="ozon-product-main">
-        <div className="ozon-product-title-row">
-          <h3>{title}</h3>
-          <span className={`ozon-product-status ozon-product-status--${statusGroup}`}>
-            {statusLabelOf(task.status)}
-          </span>
-        </div>
+      <div className="ozon-product-card-body">
+        <h3 className="ozon-product-card-title">{title}</h3>
 
-        <div className="ozon-product-meta">
-          <span>{priceOf(task)}</span>
-          <span>更新 {updateTimeOf(task)}</span>
-          <span>{categoryOf(task)}</span>
-        </div>
-
-        <div className="ozon-product-source">
-          <span>来源：1688</span>
-          <strong>{task.offerId || text(firstRow(task).offer_id) || '无 Offer ID'}</strong>
-          {sourceUrl && (
-            <a href={sourceUrl} target="_blank" rel="noreferrer" onClick={(event) => event.stopPropagation()}>
-              打开源链接
-            </a>
+        <div className="ozon-product-card-actions">
+          <button type="button" className="ozon-product-card-btn ozon-product-card-btn--inspect"
+            onClick={(event) => { event.stopPropagation(); onInspect(task); }}>
+            查看草稿
+          </button>
+          {task.status === 'draft_ready' && onSubmitDraft && (
+            <button type="button" className="ozon-product-card-btn ozon-product-card-btn--submit"
+              disabled={submitting}
+              onClick={(event) => { event.stopPropagation(); setSubmitting(true); onSubmitDraft(task); }}>
+              {submitting ? '提交中...' : '提交 Ozon'}
+            </button>
+          )}
+          {task.draft && onCopyDraft && !(task.status === 'draft_ready' && onSubmitDraft) && (
+            <button type="button" className="ozon-product-card-btn ozon-product-card-btn--copy"
+              onClick={(event) => { event.stopPropagation(); onCopyDraft(task); }}>
+              复制 Payload
+            </button>
           )}
         </div>
-
-        {message && (
-          <div className={`ozon-product-message ozon-product-message--${statusGroup}`} title={message}>
-            {message}
-          </div>
-        )}
-
-        {(() => {
-          const item = task.draft?.items?.[0];
-          const attrCount = Array.isArray(item?.attributes) ? item.attributes.length : 0;
-          if (attrCount > 3) {
-            return (
-              <div className="ozon-product-attr-hint">
-                已写入 {attrCount} 个 Ozon 属性
-              </div>
-            );
-          }
-          return null;
-        })()}
-      </div>
-
-      <div className="ozon-product-actions">
-        <button type="button" onClick={() => onInspect(task)}>
-          查看草稿
-        </button>
-        {task.draft && onCopyDraft && (
-          <button type="button" onClick={() => onCopyDraft(task)}>
-            复制 Payload
-          </button>
-        )}
-        {task.status === 'draft_ready' && onSubmitDraft && (
-          <button type="button" disabled={submitting}
-            onClick={() => { setSubmitting(true); onSubmitDraft(task); }}
-            style={{ background: '#2563eb', color: '#fff', borderColor: '#2563eb' }}>
-            {submitting ? '提交中...' : '提交 Ozon'}
-          </button>
-        )}
       </div>
     </article>
   );
