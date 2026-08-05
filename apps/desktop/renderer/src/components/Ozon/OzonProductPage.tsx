@@ -6,10 +6,8 @@ import OzonProductCard, {
   isOzonTaskImportedStatus,
   isOzonTaskFailedStatus,
   isOzonTaskProcessingStatus,
-  statusGroupOf,
 } from './OzonProductCard';
 import OzonDraftEditor from './OzonDraftEditor';
-import { formatOzonTaskDisplayMessage } from './ozonError';
 import './ozon.css';
 
 type OzonProductFilter = 'all' | 'draft' | 'imported' | 'queued' | 'manual' | 'failed';
@@ -51,131 +49,6 @@ function titleOf(task: OzonListingTask): string {
     .map((value) => String(value || '').trim())
     .filter(Boolean)
     .join(' ');
-}
-
-function objectOf(value: unknown): Record<string, unknown> {
-  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
-}
-
-function text(value: unknown): string {
-  if (value === null || value === undefined) return '';
-  return String(value).trim();
-}
-
-function variantOfTask(task: OzonListingTask): Record<string, unknown> {
-  if (!task.draft) return {};
-  const generated = objectOf(task.draft.generated);
-  const root = objectOf(task.draft.variant);
-  return Object.keys(root).length ? root : objectOf(generated.variant_mapping);
-}
-
-function variantRowsOf(task: OzonListingTask): Record<string, unknown>[] {
-  const variant = variantOfTask(task);
-  const rows = Array.isArray(variant.variants) ? variant.variants.map(objectOf).filter(Boolean) : [];
-  if (rows.length) return rows;
-
-  const sourceRows = Array.isArray(task.draft?.sourceRows) ? task.draft.sourceRows.map(objectOf) : [];
-  const items = Array.isArray(task.draft?.items) ? task.draft.items.map(objectOf) : [];
-  if (sourceRows.length <= 1) return [];
-
-  return sourceRows.map((row, index) => {
-    const item = items[index] || {};
-    const sourceSkuName = text(row.sku_name || row.skuName || row.sku_specs_text || row.specs);
-    return {
-      item_index: index,
-      offer_id: text(item.offer_id),
-      source_offer_id: text(row.source_offer_id || row.offer_id || row.offerId),
-      source_sku_id: text(row.sku_id || row.skuId),
-      source_sku_name: sourceSkuName,
-      values: parseSpecValues(sourceSkuName),
-      price: text(item.price || row.sku_price || row.price),
-      stock: text(row.sku_stock || row.stock || row.quantity || item.stock),
-    };
-  });
-}
-
-function variantDimensionsOf(task: OzonListingTask): Record<string, unknown>[] {
-  const variant = variantOfTask(task);
-  const dimensions = Array.isArray(variant.dimensions) ? variant.dimensions.map(objectOf).filter(Boolean) : [];
-  if (dimensions.length) return dimensions;
-
-  const rows = variantRowsOf(task);
-  const keys = Array.from(new Set(rows.flatMap((row) => Object.keys(objectOf(row.values)))));
-  return keys.map((key) => ({
-    source_name: key,
-    values: Array.from(new Set(rows.map((row) => text(objectOf(row.values)[key])).filter(Boolean))),
-  }));
-}
-
-function variantValuesText(values: unknown): string {
-  const obj = objectOf(values);
-  return Object.entries(obj)
-    .map(([key, value]) => `${key}: ${text(value)}`)
-    .filter((line) => !line.endsWith(': '))
-    .join(' / ');
-}
-
-function parseSpecValues(value: unknown): Record<string, string> {
-  const result: Record<string, string> = {};
-  const raw = text(value)
-    .replace(/&gt;/gi, '>')
-    .replace(/&amp;/gi, '&')
-    .replace(/\s+/g, ' ');
-  if (!raw) return result;
-
-  for (const chunk of raw.split(/\s*(?:;|；|\||>|\/)\s*/).map((item) => item.trim()).filter(Boolean)) {
-    const match = chunk.match(/^([^:=：]+)\s*[:：=]\s*(.+)$/);
-    if (!match) continue;
-    const key = text(match[1]);
-    const val = text(match[2]);
-    if (key && val) result[key] = val;
-  }
-
-  return result;
-}
-
-function OzonVariantRail({ task }: { task: OzonListingTask }) {
-  const variant = variantOfTask(task);
-  const rows = variantRowsOf(task);
-  const dimensions = variantDimensionsOf(task);
-
-  return (
-    <aside className="ozon-product-variant-rail">
-      <div className="ozon-product-variant-head">
-        <div>
-          <span>变体列表</span>
-          <strong>{rows.length || 1} 个 SKU</strong>
-        </div>
-        <small>{text(variant.status) || (rows.length ? '待确认' : '单品草稿')}</small>
-      </div>
-
-      {dimensions.length > 0 && (
-        <div className="ozon-product-variant-dims">
-          {dimensions.slice(0, 4).map((dimension) => (
-            <span key={text(dimension.source_name)}>
-              {text(dimension.source_name)}
-            </span>
-          ))}
-        </div>
-      )}
-
-      {rows.length > 0 ? (
-        <div className="ozon-product-variant-list">
-          {rows.map((item, index) => (
-            <div key={`${text(item.offer_id)}-${index}`} className="ozon-product-variant-item">
-              <div>
-                <strong>{text(item.source_sku_id) || text(item.offer_id) || `SKU ${index + 1}`}</strong>
-                <span>{variantValuesText(item.values) || text(item.source_sku_name) || '未解析规格'}</span>
-              </div>
-              <small>¥{text(item.price) || '-'} / 库存 {text(item.stock) || '0'}</small>
-            </div>
-          ))}
-        </div>
-      ) : (
-        <div className="ozon-product-variant-empty">当前草稿没有多个 SKU 变体</div>
-      )}
-    </aside>
-  );
 }
 
 export default function OzonProductPage({ tasks, onBackTo1688, onTaskUpdate }: Props) {
@@ -378,23 +251,13 @@ export default function OzonProductPage({ tasks, onBackTo1688, onTaskUpdate }: P
         <div className="ozon-product-detail-backdrop" onMouseDown={(event) => {
           if (event.target === event.currentTarget) closeTask();
         }}>
-          <OzonVariantRail task={selectedTask} />
-          <aside className="ozon-product-detail-panel ozon-product-detail-panel--visual">
-            <div className="ozon-product-detail-head">
-              <div>
-                <span>{selectedTask.offerId || '无 Offer ID'}</span>
-                <h3>{selectedTask.title || selectedTask.draftId || 'Ozon 草稿详情'}</h3>
-              </div>
-              <button type="button" onClick={closeTask}>关闭</button>
-            </div>
-            <div className={`ozon-product-detail-status ozon-product-detail-status--${statusGroupOf(selectedTask.status)}`}>
-              {formatOzonTaskDisplayMessage(selectedTask)}
-            </div>
+          <aside className="ozon-product-detail-panel ozon-product-detail-panel--editor">
             <OzonDraftEditor
               task={selectedTask}
               onTaskUpdate={handleTaskUpdate}
               onBackTo1688={onBackTo1688}
               onToast={showToast}
+              onClose={closeTask}
             />
           </aside>
         </div>
