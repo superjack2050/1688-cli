@@ -251,13 +251,19 @@ export default function OzonProductPage({ tasks, onBackTo1688, onTaskUpdate }: P
         <div className="ozon-product-detail-backdrop" onMouseDown={(event) => {
           if (event.target === event.currentTarget) closeTask();
         }}>
-          <aside className="ozon-product-detail-panel ozon-product-detail-panel--editor">
+          <aside className="ozon-product-detail-panel ozon-product-detail-panel--visual">
+            <div className="ozon-product-detail-head">
+              <div>
+                <span>{selectedTask.offerId || '无 Offer ID'}</span>
+                <h3>{selectedTask.title || selectedTask.draftId || 'Ozon 草稿详情'}</h3>
+              </div>
+              <button type="button" onClick={closeTask}>关闭</button>
+            </div>
             <OzonDraftEditor
               task={selectedTask}
               onTaskUpdate={handleTaskUpdate}
               onBackTo1688={onBackTo1688}
               onToast={showToast}
-              onClose={closeTask}
             />
           </aside>
         </div>

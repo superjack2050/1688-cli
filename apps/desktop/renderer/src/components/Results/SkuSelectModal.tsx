@@ -140,7 +140,7 @@ export default function SkuSelectModal({ open, title, mainImage, skus, onConfirm
 }
 
 export function extractSkuEntries(item: {
-  raw?: Record<string, unknown> | null;
+  raw?: unknown;
   title?: string;
   price?: string;
 }): SkuEntry[] {

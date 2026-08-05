@@ -1,9 +1,12 @@
 import React from 'react';
 
+type ValidationState = 'idle' | 'validating' | 'valid' | 'invalid';
+
 interface Props {
   submitting: boolean;
   hasDraft: boolean;
   missingCount: number;
+  validationState: ValidationState;
   lastSavedAt: string;
   onSave: () => void;
   onValidate: () => void;
@@ -12,17 +15,26 @@ interface Props {
   onAiFillAttributes?: () => void;
 }
 
+export type { ValidationState };
+
 export default function OzonEditorBottomBar({
-  submitting, hasDraft, missingCount, lastSavedAt,
+  submitting, hasDraft, missingCount, validationState, lastSavedAt,
   onSave, onValidate, onSubmit, onBack, onAiFillAttributes,
 }: Props) {
+  const canSubmit = validationState === 'valid' && !submitting && hasDraft;
+  const statusText =
+    validationState === 'valid' ? '校验通过，可以提交 Ozon'
+    : validationState === 'invalid' ? `还有 ${missingCount} 个必填字段未完成`
+    : validationState === 'validating' ? '校验中...'
+    : '';
+
   return (
     <div className="ozon-editor-bottom-bar">
       <div className="ozon-editor-bottom-left">
-        {missingCount > 0 ? (
-          <span className="ozon-editor-missing-summary">还有 {missingCount} 个必填字段未完成</span>
-        ) : (
-          <span className="ozon-editor-missing-summary ready">校验通过，可以提交 Ozon</span>
+        {statusText && (
+          <span className={`ozon-editor-missing-summary ${validationState === 'valid' ? 'ready' : validationState === 'invalid' ? 'warn' : ''}`}>
+            {statusText}
+          </span>
         )}
         {lastSavedAt && <span className="ozon-editor-saved-at">最近保存：{lastSavedAt}</span>}
       </div>
@@ -34,9 +46,8 @@ export default function OzonEditorBottomBar({
           <button type="button" className="glass-btn-secondary" onClick={onAiFillAttributes}>AI 补全属性</button>
         )}
         <button type="button" className="glass-btn-secondary" onClick={onValidate}>校验商品</button>
-        <button type="button" className="glass-btn-primary" disabled={submitting || missingCount > 0 || !hasDraft}
-          style={{ background: (missingCount > 0 || !hasDraft) ? undefined : 'linear-gradient(135deg, #2563eb, #1d4ed8)' }}
-          onClick={onSubmit}>
+        <button type="button" className={`glass-btn-primary ${!canSubmit ? 'disabled' : ''}`}
+          disabled={!canSubmit} onClick={onSubmit}>
           {submitting ? '提交中...' : '提交 Ozon'}
         </button>
       </div>

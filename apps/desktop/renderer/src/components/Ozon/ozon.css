@@ -1205,8 +1205,13 @@
   padding: 18px;
 }
 
+/* Editor panel — full width (overrides the base 640px) */
+.ozon-product-detail-panel--visual,
+.ozon-product-detail-panel--editor {
+  width: min(1540px, calc(100vw - 48px));
+}
+
 .ozon-product-detail-panel--visual {
-  width: min(1160px, calc(100vw - 36px));
   background:
     radial-gradient(circle at 12% 0%, rgba(219,234,254,0.58), transparent 36%),
     radial-gradient(circle at 92% 18%, rgba(240,253,244,0.52), transparent 32%),
@@ -2582,3 +2587,92 @@
   border-color: #2563eb;
   background: #eff6ff;
 }
+
+/* ── Category drawer ── */
+.ozon-category-drawer-backdrop {
+  position: fixed; inset: 0; z-index: 10001;
+  display: flex; align-items: stretch; justify-content: flex-end;
+  background: rgba(15,23,42,0.25); backdrop-filter: blur(6px);
+}
+.ozon-category-drawer {
+  width: min(520px, 90vw); height: 100%;
+  display: flex; flex-direction: column;
+  background: #fff; box-shadow: -8px 0 40px rgba(15,23,42,0.12);
+  padding: 0; overflow: hidden;
+}
+.ozon-category-drawer-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 18px 20px; border-bottom: 1px solid #e5e7eb;
+}
+.ozon-category-drawer-head h3 { margin: 0; font-size: 18px; font-weight: 700; }
+.ozon-category-drawer-close {
+  border: 0; background: transparent; font-size: 18px; cursor: pointer; color: #64748b;
+}
+.ozon-category-drawer-search {
+  display: flex; gap: 8px; padding: 12px 20px; border-bottom: 1px solid #f0f0f0;
+}
+.ozon-category-drawer-search input { flex: 1; }
+.ozon-category-drawer-sync-btn { font-size: 12px; white-space: nowrap; }
+.ozon-category-drawer-msg { padding: 12px 20px; color: #64748b; font-size: 13px; }
+.ozon-category-drawer-body {
+  flex: 1; overflow-y: auto; padding: 8px 0;
+}
+.ozon-category-drawer-row {
+  display: flex; align-items: center; gap: 6px; min-height: 36px;
+  padding: 2px 20px; cursor: default;
+}
+.ozon-category-drawer-row:hover { background: #f1f5f9; }
+.ozon-category-drawer-toggle {
+  width: 22px; border: 0; background: transparent; cursor: pointer;
+  color: #64748b; font-size: 12px; text-align: center;
+}
+.ozon-category-drawer-label {
+  flex: 1; border: 0; background: transparent; text-align: left;
+  padding: 6px 4px; cursor: default; font-size: 13px; color: #334155;
+}
+.ozon-category-drawer-label.selectable { cursor: pointer; color: #0f172a; font-weight: 600; }
+.ozon-category-drawer-label.selectable:hover { color: #2563eb; }
+.ozon-category-drawer-current {
+  padding: 10px 20px; border-top: 1px solid #e5e7eb;
+  font-size: 12px; color: #2563eb; font-weight: 600;
+}
+.ozon-category-drawer-actions {
+  display: flex; gap: 8px; justify-content: flex-end;
+  padding: 14px 20px; border-top: 1px solid #e5e7eb;
+}
+
+/* ── Editor nav (right sidebar) ── */
+.ozon-editor-nav {
+  position: sticky; top: 16px;
+  width: 136px; flex-shrink: 0;
+  display: flex; flex-direction: column; gap: 4px;
+}
+.ozon-editor-nav-item {
+  display: flex; align-items: center; justify-content: space-between;
+  border: 1px solid transparent; border-radius: 8px;
+  padding: 8px 12px; background: transparent; cursor: pointer;
+  font-size: 13px; color: #64748b; font-weight: 600;
+}
+.ozon-editor-nav-item:hover { background: #f1f5f9; color: #0f172a; }
+.ozon-editor-nav-item.active { background: #eff6ff; color: #2563eb; border-color: rgba(37,99,235,0.18); }
+.ozon-editor-nav-badge {
+  min-width: 20px; height: 20px; display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 999px; background: #ef4444; color: #fff; font-size: 11px; font-weight: 700; padding: 0 5px;
+}
+
+/* ── Editor bottom bar ── */
+.ozon-editor-bottom-bar {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 16px; padding: 14px 24px;
+  background: #fff; border-top: 1px solid #e5e7eb;
+  box-shadow: 0 -4px 12px rgba(15,23,42,0.04);
+}
+.ozon-editor-bottom-left {
+  display: flex; align-items: center; gap: 12px; font-size: 13px;
+}
+.ozon-editor-missing-summary { color: #64748b; }
+.ozon-editor-missing-summary.warn { color: #d97706; font-weight: 700; }
+.ozon-editor-missing-summary.ready { color: #16a34a; font-weight: 700; }
+.ozon-editor-saved-at { color: #94a3b8; font-size: 12px; }
+.ozon-editor-bottom-actions { display: flex; gap: 8px; align-items: center; }
+.glass-btn-primary.disabled { opacity: 0.45; cursor: not-allowed; background: #e5e7eb !important; color: #9ca3af !important; }

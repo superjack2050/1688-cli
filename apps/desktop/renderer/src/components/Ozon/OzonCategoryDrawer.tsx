@@ -1,6 +1,6 @@
-import React, { useState, useEffect } from 'react';
+import React from 'react';
 import { createPortal } from 'react-dom';
-import type { OzonCategoryEntry } from '../../../services/api';
+import type { OzonCategoryEntry } from '../../services/api';
 
 interface CategoryTreeViewNode {
   id: string;
@@ -15,7 +15,6 @@ interface CategoryTreeViewNode {
 
 interface Props {
   open: boolean;
-  title?: string;
   currentPath?: string;
   query: string;
   onQueryChange: (value: string) => void;
@@ -48,25 +47,32 @@ function filterTree(nodes: CategoryTreeViewNode[], q: string): CategoryTreeViewN
   return result;
 }
 
-function CategoryNodeRow({ node, expanded, onToggle, onSelect, level }: {
-  node: CategoryTreeViewNode; expanded: boolean; onToggle: (id: string) => void; onSelect: (node: CategoryTreeViewNode) => void; level: number;
+function CategoryNodeRow({ node, expandedIds, onToggleExpand, onSelectNode, level }: {
+  node: CategoryTreeViewNode;
+  expandedIds: Record<string, boolean>;
+  onToggleExpand: (id: string) => void;
+  onSelectNode: (node: CategoryTreeViewNode) => void;
+  level: number;
 }) {
   const hasChildren = node.children.length > 0;
   const isSelectable = node.selectable;
+  const expanded = expandedIds[node.id] === true;
+
   return (
     <>
-      <div className={`ozon-category-drawer-row level-${Math.min(level, 3)}`} style={{ paddingLeft: level * 20 + 8 }}>
+      <div className={`ozon-category-drawer-row level-${Math.min(level, 3)}`}>
         <button type="button" className="ozon-category-drawer-toggle"
-          onClick={() => hasChildren ? onToggle(node.id) : onSelect(node)}>
+          onClick={() => hasChildren ? onToggleExpand(node.id) : onSelectNode(node)}>
           {hasChildren ? (expanded ? '▾' : '▸') : '•'}
         </button>
         <button type="button" className={`ozon-category-drawer-label ${isSelectable ? 'selectable' : ''}`}
-          onClick={() => isSelectable ? onSelect(node) : onToggle(node.id)}>
+          onClick={() => isSelectable ? onSelectNode(node) : onToggleExpand(node.id)}>
           {node.label}
         </button>
       </div>
       {hasChildren && expanded && node.children.map((child) => (
-        <CategoryNodeRow key={child.id} node={child} expanded={!!expanded} onToggle={onToggle} onSelect={onSelect} level={level + 1} />
+        <CategoryNodeRow key={child.id} node={child} expandedIds={expandedIds}
+          onToggleExpand={onToggleExpand} onSelectNode={onSelectNode} level={level + 1} />
       ))}
     </>
   );
@@ -76,10 +82,6 @@ export default function OzonCategoryDrawer({
   open, currentPath, query, onQueryChange, treeNodes, treeLoading, treeMessage,
   expandedIds, onToggleExpand, onSelectNode, pendingEntry, onConfirm, onCancel, onSyncTree,
 }: Props) {
-  const [localExpanded, setLocalExpanded] = useState<Record<string, boolean>>({});
-
-  useEffect(() => { setLocalExpanded(expandedIds); }, [expandedIds]);
-
   if (!open) return null;
 
   const visible = filterTree(treeNodes, query);
@@ -91,13 +93,13 @@ export default function OzonCategoryDrawer({
       <div className="ozon-category-drawer">
         <div className="ozon-category-drawer-head">
           <h3 id="ozon-cat-drawer-title">选择 Ozon 类目</h3>
-          <button type="button" className="ozon-category-drawer-close" onClick={onCancel}>✕</button>
+          <button type="button" className="ozon-category-drawer-close" onClick={onCancel}>关闭</button>
         </div>
 
         <div className="ozon-category-drawer-search">
           <input className="glass-input" value={query} placeholder="搜索 Ozon 类目..."
             onChange={(e) => onQueryChange(e.target.value)} />
-          <button type="button" className="glass-btn-ghost" onClick={onSyncTree} style={{ fontSize: 12, whiteSpace: 'nowrap' }}>
+          <button type="button" className="glass-btn-ghost ozon-category-drawer-sync-btn" onClick={onSyncTree}>
             同步最新类目
           </button>
         </div>
@@ -112,16 +114,21 @@ export default function OzonCategoryDrawer({
           ) : (
             visible.map((node) => (
               <CategoryNodeRow key={node.id} node={node}
-                expanded={localExpanded[node.id] || false}
-                onToggle={(id) => setLocalExpanded((prev) => ({ ...prev, [id]: !prev[id] }))}
-                onSelect={onSelectNode} level={0} />
+                expandedIds={expandedIds}
+                onToggleExpand={onToggleExpand}
+                onSelectNode={onSelectNode} level={0} />
             ))
           )}
         </div>
 
+        {currentPath && (
+          <div className="ozon-category-drawer-current">
+            当前类目：{currentPath}
+          </div>
+        )}
         {pendingEntry && (
           <div className="ozon-category-drawer-current">
-            当前选择：{pendingEntry.path || pendingEntry.keyword}
+            待确认：{pendingEntry.path || pendingEntry.keyword}
           </div>
         )}
 
