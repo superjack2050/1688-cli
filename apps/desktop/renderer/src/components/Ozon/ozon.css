@@ -2676,3 +2676,583 @@
 .ozon-editor-saved-at { color: #94a3b8; font-size: 12px; }
 .ozon-editor-bottom-actions { display: flex; gap: 8px; align-items: center; }
 .glass-btn-primary.disabled { opacity: 0.45; cursor: not-allowed; background: #e5e7eb !important; color: #9ca3af !important; }
+
+/* ── ERP Ozon 商品编辑布局（迁移自 AiEditProduct.vue）── */
+
+/* 页面骨架 */
+.ozon-ai-edit-page {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: #f6f7fb;
+  overflow: hidden;
+}
+
+.ozon-ai-edit-topbar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 24px;
+  background: #fff;
+  border-bottom: 1px solid #eef1f6;
+}
+.ozon-ai-edit-topbar h4 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 700;
+  color: #0f172a;
+}
+.ozon-ai-edit-topbar > div:first-child > span {
+  display: block;
+  margin-top: 2px;
+  font-size: 12px;
+  color: #94a3b8;
+}
+.ozon-ai-edit-top-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 12px;
+  color: #64748b;
+}
+.ozon-ai-edit-top-actions .ready {
+  color: #16a34a;
+  font-weight: 700;
+}
+.ozon-ai-edit-draft-status { color: #64748b; }
+.ozon-ai-edit-draft-status.warn { color: #d97706; font-weight: 700; }
+.ozon-ai-edit-top-actions button {
+  height: 32px;
+  padding: 0 14px;
+  border: 1px solid #d9dde6;
+  border-radius: 8px;
+  background: #fff;
+  color: #475569;
+  font-size: 13px;
+  cursor: pointer;
+}
+.ozon-ai-edit-top-actions button:hover { border-color: #7c3aed; color: #7c3aed; }
+
+/* 滚动容器（IntersectionObserver 的真实滚动容器） */
+.ozon-ai-edit-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.ozon-ai-edit-layout {
+  display: flex;
+  align-items: flex-start;
+  gap: 24px;
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 24px;
+}
+
+.ozon-ai-edit-center {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+/* 右侧导航（ERP 风格：透明背景、紫色左竖线） */
+.ozon-ai-edit-nav {
+  position: sticky;
+  top: 20px;
+  width: 140px;
+  flex-shrink: 0;
+  background: transparent;
+}
+.ozon-ai-edit-nav-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.ozon-ai-edit-nav-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  padding: 10px 14px;
+  border: none;
+  border-left: 3px solid transparent;
+  border-radius: 0 8px 8px 0;
+  background: transparent;
+  color: #1f2937;
+  font-size: 13px;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+}
+.ozon-ai-edit-nav-item:hover { color: #7c3aed; }
+.ozon-ai-edit-nav-item.active {
+  border-left-color: #7c3aed;
+  background: rgba(124, 58, 237, 0.06);
+  color: #7c3aed;
+  font-weight: 700;
+}
+.ozon-ai-edit-nav-badge {
+  min-width: 18px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: #ef4444;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 0 5px;
+}
+
+/* 表单卡片 */
+.ozon-form-card {
+  background: #fff;
+  border: 1px solid #eef1f6;
+  border-radius: 16px;
+  padding: 24px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+}
+.ozon-form-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 20px;
+  font-size: 16px;
+  font-weight: 700;
+  color: #0f172a;
+}
+
+/* 属性栅格（2 列，ERP 18px 行距 / 20px 列距） */
+.ozon-attr-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px 20px;
+}
+.ozon-attr-item {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 140px minmax(0, 1fr);
+  gap: 10px 12px;
+  align-items: center;
+}
+.ozon-attr-item.full { grid-column: 1 / -1; }
+.ozon-attr-label {
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: #0f172a;
+  line-height: 1.4;
+}
+.ozon-attr-label .req { color: #ef4444; margin-left: 2px; }
+.ozon-attr-label .unit-warning {
+  display: block;
+  margin-top: 2px;
+  font-size: 11px;
+  font-weight: 600;
+  color: #f59e0b;
+}
+.ozon-attr-control { min-width: 0; }
+.ozon-attr-control input,
+.ozon-attr-control textarea,
+.ozon-attr-control select,
+.ozon-dictionary-trigger,
+.ozon-category-current {
+  width: 100%;
+  min-height: 40px;
+  border: 1px solid #d9dde6;
+  border-radius: 8px;
+  background: #fff;
+  color: #0f172a;
+  font-size: 13px;
+  outline: none;
+}
+.ozon-attr-control input,
+.ozon-attr-control select {
+  height: 40px;
+  padding: 0 12px;
+}
+.ozon-attr-control textarea {
+  height: auto;
+  padding: 10px 12px;
+  resize: vertical;
+  line-height: 1.5;
+}
+.ozon-attr-control input:focus,
+.ozon-attr-control textarea:focus,
+.ozon-attr-control select:focus,
+.ozon-dictionary-trigger:focus {
+  border-color: #7c3aed;
+  box-shadow: 0 0 0 3px rgba(124, 58, 237, 0.12);
+}
+.ozon-attr-control input[readonly] {
+  background: #f8fafc;
+  color: #475569;
+}
+.ozon-attr-control input::placeholder,
+.ozon-attr-control textarea::placeholder {
+  color: #a1a9ba;
+}
+.ozon-attr-error-text {
+  grid-column: 2;
+  color: #dc2626;
+  font-size: 12px;
+  font-weight: 600;
+  margin-top: 2px;
+}
+
+/* 类目选择 */
+.ozon-category-current {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 0 12px;
+  cursor: default;
+}
+.ozon-category-current span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #0f172a;
+}
+.ozon-category-current span.empty { color: #a1a9ba; }
+.ozon-category-current button {
+  flex: 0 0 auto;
+  border: none;
+  background: transparent;
+  color: #2563eb;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.ozon-category-current button:hover { color: #7c3aed; }
+
+/* 尺寸（长×宽×高） */
+.ozon-dimension-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.ozon-dimension-field {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+}
+.ozon-dimension-field input {
+  width: 100%;
+  height: 40px;
+  padding: 0 34px 0 12px;
+  border: 1px solid #d9dde6;
+  border-radius: 8px;
+  background: #fff;
+  color: #0f172a;
+  font-size: 13px;
+  outline: none;
+}
+.ozon-dimension-field input:focus {
+  border-color: #7c3aed;
+  box-shadow: 0 0 0 3px rgba(124, 58, 237, 0.12);
+}
+.dimension-hint {
+  position: absolute;
+  right: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: #a1a9ba;
+  font-size: 12px;
+  pointer-events: none;
+}
+.dimension-sep { color: #94a3b8; font-size: 14px; flex: none; }
+
+/* 产品属性区 */
+.ozon-attr-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.ozon-more-attrs-hint {
+  color: #d97706;
+  font-size: 12px;
+  font-weight: 700;
+}
+.ozon-more-attrs-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 44px;
+  padding: 0 22px;
+  border: none;
+  border-radius: 12px;
+  background: linear-gradient(135deg, #7c3aed 0%, #4f46e5 60%, #2563eb 100%);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  box-shadow: 0 4px 12px rgba(124, 58, 237, 0.25);
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+.ozon-more-attrs-btn:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 6px 16px rgba(124, 58, 237, 0.32);
+}
+.ozon-more-attrs-btn.warn {
+  box-shadow: 0 0 0 3px rgba(217, 119, 6, 0.28), 0 4px 12px rgba(124, 58, 237, 0.25);
+}
+.ozon-more-attrs-arrow { font-size: 14px; line-height: 1; }
+.ozon-attrs-status-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 14px;
+  font-size: 12px;
+  color: #64748b;
+}
+.ozon-attrs-status-row button {
+  border: 1px solid #d9dde6;
+  border-radius: 6px;
+  background: #fff;
+  color: #475569;
+  font-size: 12px;
+  padding: 2px 10px;
+  cursor: pointer;
+}
+.ozon-attrs-status-row button:hover { border-color: #7c3aed; color: #7c3aed; }
+
+/* 更多属性（当前类目专有，180px 右对齐标签单列行） */
+.ozon-other-attrs-block {
+  margin-top: 22px;
+  border-top: 1px dashed #e2e8f0;
+  padding-top: 22px;
+}
+.ozon-other-attrs-divider {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+.ozon-other-attrs-divider span {
+  font-size: 13px;
+  font-weight: 700;
+  color: #0f172a;
+}
+.ozon-other-attrs-divider small { color: #94a3b8; font-size: 12px; }
+.ozon-other-attr-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 16px 20px;
+}
+.ozon-other-attr-item {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 180px minmax(0, 1fr);
+  gap: 10px 14px;
+  align-items: flex-start;
+}
+.ozon-other-attr-label {
+  padding-top: 11px;
+  text-align: right;
+  word-break: break-word;
+}
+.ozon-other-attr-control { min-width: 0; }
+.ozon-other-attr-error { grid-column: 2; margin-top: -6px; }
+.ozon-other-attr-empty {
+  grid-column: 1 / -1;
+  padding: 18px;
+  text-align: center;
+  border-radius: 10px;
+  background: #f8fafc;
+  color: #94a3b8;
+  font-size: 13px;
+}
+
+/* 变体表（只读） */
+.ozon-variant-header-meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+  color: #64748b;
+}
+.ozon-variant-header-meta small { color: #94a3b8; font-size: 12px; }
+.ozon-variant-table-wrap {
+  overflow: auto;
+  border: 1px solid #e5e9f0;
+  border-radius: 10px;
+}
+.ozon-variant-table {
+  width: 100%;
+  min-width: 720px;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.ozon-variant-table th,
+.ozon-variant-table td {
+  padding: 10px 12px;
+  border-bottom: 1px solid #eef1f6;
+  text-align: left;
+  white-space: nowrap;
+  vertical-align: middle;
+}
+.ozon-variant-table thead th {
+  background: #f8fafc;
+  color: #475569;
+  font-size: 12px;
+  font-weight: 700;
+}
+.ozon-variant-table tbody tr:last-child td { border-bottom: none; }
+.ozon-variant-table tbody tr:hover { background: #fafbfe; }
+.ozon-variant-table td { color: #334155; }
+.ozon-variant-table .col-idx { width: 44px; text-align: center; color: #94a3b8; }
+.ozon-variant-table .col-sku-name { min-width: 180px; max-width: 240px; overflow: hidden; text-overflow: ellipsis; }
+.ozon-variant-table .col-images { min-width: 160px; }
+.ozon-variant-table .col-offer-id,
+.ozon-variant-table .col-price,
+.ozon-variant-table .col-stock { min-width: 90px; }
+.ozon-variant-table .col-dim { min-width: 120px; }
+
+.variant-img-list {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.variant-img-item {
+  position: relative;
+  width: 44px;
+  height: 44px;
+  flex: none;
+  border: 1px solid #e5e9f0;
+  border-radius: 8px;
+  overflow: hidden;
+}
+.variant-img-item img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.variant-img-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(15, 23, 42, 0.55);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+}
+.variant-img-placeholder {
+  padding: 12px 0;
+  color: #a1a9ba;
+  font-size: 12px;
+}
+.ozon-variant-dims-hint {
+  margin-top: 12px;
+  font-size: 12px;
+  color: #64748b;
+}
+
+/* ERP 底部操作栏 */
+.ozon-ai-edit-bottom-bar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px 24px;
+  background: #fff;
+  border-top: 1px solid #e5e7eb;
+  box-shadow: 0 -4px 16px rgba(15, 23, 42, 0.05);
+}
+.ozon-ai-edit-bottom-left,
+.ozon-ai-edit-bottom-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.ozon-ai-edit-hint { font-size: 12px; color: #64748b; }
+.ozon-ai-edit-status { font-size: 12px; color: #64748b; }
+.ozon-ai-edit-status.warn { color: #d97706; font-weight: 700; }
+.ozon-ai-edit-status.ready { color: #16a34a; font-weight: 700; }
+.ozon-ai-edit-saved-at { color: #94a3b8; font-size: 12px; }
+
+.ozon-ai-edit-btn-gradient,
+.ozon-ai-edit-btn-plain,
+.ozon-ai-edit-btn-secondary,
+.ozon-ai-edit-btn-primary {
+  height: 40px;
+  padding: 0 18px;
+  border-radius: 10px;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+.ozon-ai-edit-btn-gradient {
+  border: none;
+  background: linear-gradient(135deg, #7c3aed 0%, #4f46e5 60%, #2563eb 100%);
+  color: #fff;
+  box-shadow: 0 4px 12px rgba(124, 58, 237, 0.25);
+}
+.ozon-ai-edit-btn-gradient:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 6px 16px rgba(124, 58, 237, 0.32);
+}
+.ozon-ai-edit-btn-gradient:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+  transform: none;
+}
+.ozon-ai-edit-btn-plain {
+  border: 1px solid #d9dde6;
+  background: #fff;
+  color: #475569;
+  font-weight: 600;
+}
+.ozon-ai-edit-btn-plain:hover { border-color: #7c3aed; color: #7c3aed; }
+.ozon-ai-edit-btn-secondary {
+  border: 1px solid #c7cbd6;
+  background: #fff;
+  color: #334155;
+  font-weight: 600;
+}
+.ozon-ai-edit-btn-secondary:hover { border-color: #7c3aed; color: #7c3aed; }
+.ozon-ai-edit-btn-secondary:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+.ozon-ai-edit-btn-primary {
+  border: none;
+  padding: 0 24px;
+  background: linear-gradient(135deg, #7c3aed 0%, #2563eb 100%);
+  color: #fff;
+  box-shadow: 0 4px 12px rgba(124, 58, 237, 0.25);
+}
+.ozon-ai-edit-btn-primary:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 6px 16px rgba(124, 58, 237, 0.32);
+}
+.ozon-ai-edit-btn-primary.disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: none;
+}
+
+/* 窄屏降级：隐藏右侧导航、表单单列 */
+@media (max-width: 960px) {
+  .ozon-ai-edit-nav { display: none; }
+  .ozon-ai-edit-layout { padding: 16px; }
+  .ozon-attr-grid { grid-template-columns: 1fr; }
+  .ozon-attr-item { grid-template-columns: 120px minmax(0, 1fr); }
+  .ozon-other-attr-item { grid-template-columns: 140px minmax(0, 1fr); }
+}

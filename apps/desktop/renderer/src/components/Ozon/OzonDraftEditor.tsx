@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   getApi,
   type OzonAttributeValue,
@@ -7,8 +7,11 @@ import {
   type OzonCategoryRawNode,
   type OzonDraft,
 } from '../../services/api';
-import type { OzonListingTask, OzonListingTaskPatch } from '../Results/ozonListing/types';
+import type { OzonListingTask, OzonListingTaskPatch, OzonListingTaskStatus } from '../Results/ozonListing/types';
 import { formatMissingFields, unique } from '../Results/ozonListing/precheck';
+import OzonEditorNav, { type EditorSectionId } from './OzonEditorNav';
+import OzonEditorBottomBar, { type ValidationState } from './OzonEditorBottomBar';
+import OzonCategoryDrawer from './OzonCategoryDrawer';
 
 const ATTR_BRAND = 85;
 const ATTR_MODEL = 9048;
@@ -50,14 +53,22 @@ type DraftBuildResult = {
 
 type DictionaryValueIds = Record<string, Record<string, number>>;
 
+type VariantRowView = {
+  key: string;
+  skuName: string;
+  images: string[];
+  offerId: string;
+  price: string;
+  stock: string;
+  values: Record<string, unknown>;
+};
+
 type Props = {
   task: OzonListingTask;
   onTaskUpdate?: (key: string, patch: OzonListingTaskPatch) => void;
   onBackTo1688: () => void;
   onToast?: (message: string) => void;
 };
-
-const steps = ['1 商品信息', '2 特征', '3 媒体', '4 预览'];
 
 function objectOf(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
@@ -342,25 +353,19 @@ function collectProductPageMissing(form: DraftForm): string[] {
   return missing;
 }
 
-function visibleCategoryAttributes(attrs: OzonCategoryAttribute[], mode: 'feature' | 'media'): OzonCategoryAttribute[] {
-  return attrs
-    .filter((attr) => !CONTROLLED_ATTR_IDS.has(attr.id))
-    .filter((attr) => {
-      const name = `${attr.name} ${attr.description} ${attr.groupName}`.toLowerCase();
-      const media = /video|rich|pdf|json|image|picture|видео|медиа|изображ|фото|富内容|视频|图片|封面|pdf/i.test(name);
-      return mode === 'media' ? media : !media;
-    })
-    .slice(0, mode === 'feature' ? 80 : 40);
+function isMediaAttributeName(attr: OzonCategoryAttribute): boolean {
+  const name = `${attr.name} ${attr.description} ${attr.groupName}`.toLowerCase();
+  return /video|rich|pdf|json|image|picture|видео|медиа|изображ|фото|富内容|视频|图片|封面|pdf/i.test(name);
 }
 
-function collectFeatureMissing(
+function collectAttributeMissing(
   form: DraftForm,
   dynamicValues: Record<string, string>,
   attrs: OzonCategoryAttribute[],
 ): string[] {
   const missing: string[] = [];
   if (!form.model.trim()) missing.push('型号名称');
-  for (const attr of visibleCategoryAttributes(attrs, 'feature')) {
+  for (const attr of attrs) {
     if (!attr.isRequired) continue;
     if (!text(dynamicValues[String(attr.id)])) missing.push(attr.name || `属性 ${attr.id}`);
   }
@@ -370,9 +375,9 @@ function collectFeatureMissing(
 function collectPayloadMissing(
   draft: OzonDraft,
   items: Record<string, unknown>[],
-  featureMissing: string[],
+  attributeMissing: string[],
 ): string[] {
-  const missing = new Set<string>(featureMissing);
+  const missing = new Set<string>(attributeMissing);
   for (const item of items) {
     if (!text(item.name)) missing.add('俄语标题');
     if (!text(item.primary_image)) missing.add('主图');
@@ -411,6 +416,7 @@ function buildDraft(
   dynamicValues: Record<string, string>,
   categoryAttributes: OzonCategoryAttribute[],
   dictionaryValueIds: DictionaryValueIds,
+  requiredAttrs: OzonCategoryAttribute[],
 ): DraftBuildResult | null {
   if (!task.draft) return null;
 
@@ -458,8 +464,8 @@ function buildDraft(
     };
   });
 
-  const featureMissing = collectFeatureMissing(form, dynamicValues, categoryAttributes);
-  const missing = collectPayloadMissing({ ...draft, items: nextItems }, nextItems, featureMissing);
+  const attributeMissing = collectAttributeMissing(form, dynamicValues, requiredAttrs);
+  const missing = collectPayloadMissing({ ...draft, items: nextItems }, nextItems, attributeMissing);
   const tags = normalizeTagsForPayload(form.tags).split(/\r?\n/).filter(Boolean);
   const estimatedDimensions = objectOf(draft.generated?.estimated_dimensions);
   const lengthCm = form.dimensionUnit === 'mm' ? Number(firstItem.depth) / 10 : Number(firstItem.depth) || 0;
@@ -508,6 +514,24 @@ function sourceSummary(task: OzonListingTask): string {
   ].filter(Boolean).join(' / ') || '来自 1688 深采结果';
 }
 
+function draftStatusLabel(status: OzonListingTaskStatus): string {
+  switch (status) {
+    case 'draft_ready': return '草稿已保存';
+    case 'queued':
+    case 'waiting_deep_collect':
+    case 'deep_collecting':
+    case 'generating_draft': return '草稿生成中';
+    case 'import_pending': return '提交中';
+    case 'imported': return '已导入';
+    case 'listing_ready': return '已上架';
+    case 'needs_manual':
+    case 'deep_failed':
+    case 'failed':
+    case 'submit_failed': return '需要处理';
+    default: return status;
+  }
+}
+
 function variantOf(draft?: OzonDraft): Record<string, unknown> {
   if (!draft) return {};
   const generated = objectOf(draft.generated);
@@ -523,16 +547,57 @@ function variantDimensions(variant: Record<string, unknown>): Record<string, unk
   return Array.isArray(variant.dimensions) ? variant.dimensions.map(objectOf).filter(Boolean) : [];
 }
 
-function variantValuesText(values: unknown): string {
-  const obj = objectOf(values);
-  return Object.entries(obj)
-    .map(([key, value]) => `${key}: ${text(value)}`)
-    .filter((line) => !line.endsWith(': '))
-    .join(' / ');
+function variantImageListFromItem(item: Record<string, unknown>): string[] {
+  const images: string[] = [];
+  const primary = normalizeImageUrl(text(item.primary_image));
+  if (primary) images.push(primary);
+  const values = Array.isArray(item.images) ? item.images : [];
+  for (const value of values) {
+    const url = normalizeImageUrl(text(value));
+    if (url && !images.includes(url)) images.push(url);
+  }
+  return images.slice(0, 8);
 }
 
-function categoryId(entry: OzonCategoryEntry): string {
-  return `${entry.descriptionCategoryId || entry.description_category_id}:${entry.typeId || entry.type_id}`;
+function buildVariantTableView(
+  task: OzonListingTask,
+  draft: OzonDraft | undefined,
+  firstItem: Record<string, unknown>,
+): { rows: VariantRowView[]; dims: Record<string, unknown>[] } {
+  const variant = variantOf(draft);
+  const variantRowList = variantRows(variant);
+  const dims = variantDimensions(variant);
+  if (variantRowList.length) {
+    const items = Array.isArray(draft?.items) ? draft.items : [];
+    const rows = variantRowList.map((row, index) => {
+      const item = objectOf(items[Number(row.item_index) ?? index] ?? items[index]);
+      return {
+        key: `${text(row.offer_id) || `sku-${index}`}-${index}`,
+        skuName: text(row.source_sku_name) || text(item.name) || `SKU ${index + 1}`,
+        images: variantImageListFromItem({ primary_image: row.image || item.primary_image, images: item.images }),
+        offerId: text(row.offer_id),
+        price: text(row.price),
+        stock: text(row.stock),
+        values: objectOf(row.values),
+      };
+    });
+    return { rows, dims };
+  }
+
+  const row = firstRowOf(task);
+  const stock = text(firstItem.stock) || text(row.sku_stock) || text(row.stock) || text(row.available_stock);
+  return {
+    rows: [{
+      key: 'single-0',
+      skuName: text(firstItem.name) || 'SKU 1',
+      images: variantImageListFromItem(firstItem),
+      offerId: text(firstItem.offer_id),
+      price: text(firstItem.price),
+      stock,
+      values: {},
+    }],
+    dims: [],
+  };
 }
 
 function categoryDescriptionId(entry: OzonCategoryEntry): number {
@@ -543,17 +608,9 @@ function categoryTypeId(entry: OzonCategoryEntry): number {
   return Number(entry.typeId || entry.type_id || 0);
 }
 
-function PreviewImage({ src }: { src: string }) {
-  const [failed, setFailed] = useState(false);
-  if (!src || failed) {
-    return <div className="ozon-draft-image-preview placeholder">暂无图片</div>;
-  }
-  return <img className="ozon-draft-image-preview" src={src} alt="" onError={() => setFailed(true)} />;
-}
-
 function FieldError({ show, text: value }: { show: boolean; text: string }) {
   if (!show) return null;
-  return <small className="ozon-draft-error-text">{value}</small>;
+  return <small className="ozon-attr-error-text">{value}</small>;
 }
 
 function normalizeAttributeName(value: unknown): string {
@@ -800,6 +857,7 @@ function DictionaryAttributeField({
       });
       const rawOptions = response.values || [];
       setOptions(rawOptions);
+      onLoadOptions?.(attr, rawOptions);
       setMessage(response.hasNext ? '字典值较多，已显示前 2000 个。' : '');
     } catch (error) {
       setOptions([]);
@@ -974,156 +1032,34 @@ function treeNodeToCategoryEntry(node: CategoryTreeViewNode): OzonCategoryEntry 
   };
 }
 
-function normalizeCategorySearchText(value: unknown): string {
-  return String(value || '').trim().toLowerCase();
-}
-
-function categorySearchTokens(query: string): string[] {
-  return normalizeCategorySearchText(query)
-    .split(/\s+/)
-    .map((item) => item.trim())
-    .filter(Boolean);
-}
-
 function isSelectableCategoryNode(node: CategoryTreeViewNode): boolean {
   return node.selectable;
 }
 
-function selectableCategoryNodeMatches(node: CategoryTreeViewNode, tokens: string[]): boolean {
-  if (!isSelectableCategoryNode(node)) return false;
-  if (!tokens.length) return true;
-
-  const haystack = normalizeCategorySearchText([
-    node.label,
-    node.path,
-    node.descriptionCategoryId,
-    node.typeId,
-  ].join(' '));
-
-  return tokens.every((token) => haystack.includes(token));
-}
-
-function filterCategoryTree(
-  nodes: CategoryTreeViewNode[],
-  query: string,
-): CategoryTreeViewNode[] {
-  const tokens = categorySearchTokens(query);
-
-  if (!tokens.length) return nodes;
-
-  const result: CategoryTreeViewNode[] = [];
-
-  for (const node of nodes) {
-    const children = filterCategoryTree(node.children, query);
-    const selfMatched = selectableCategoryNodeMatches(node, tokens);
-
-    if (selfMatched || children.length > 0) {
-      result.push({
-        ...node,
-        children,
-      });
-    }
-  }
-
-  return result;
-}
-
-function collectExpandedCategoryIds(
-  nodes: CategoryTreeViewNode[],
-  output: Record<string, boolean> = {},
-): Record<string, boolean> {
-  for (const node of nodes) {
-    if (node.children.length > 0) {
-      output[node.id] = true;
-      collectExpandedCategoryIds(node.children, output);
-    }
-  }
-  return output;
-}
-
-function CategoryTreeList({
-  nodes,
-  expanded,
-  onToggle,
-  onSelect,
-  level = 0,
-}: {
-  nodes: CategoryTreeViewNode[];
-  expanded: Record<string, boolean>;
-  onToggle: (id: string) => void;
-  onSelect: (node: CategoryTreeViewNode) => void;
-  level?: number;
-}) {
-  if (!nodes.length) return null;
-
-  return (
-    <div className="ozon-category-tree-list">
-      {nodes.map((node) => {
-        const isExpanded = expanded[node.id] === true;
-        const hasChildren = node.children.length > 0;
-
-        return (
-          <div key={node.id} className="ozon-category-tree-node">
-            <div
-              className={`ozon-category-tree-row level-${level + 1} ${isSelectableCategoryNode(node) ? 'selectable' : ''}`}
-              style={{ paddingLeft: `${level * 24 + 8}px` }}
-            >
-              <button
-                type="button"
-                className="ozon-category-tree-toggle"
-                onClick={() => hasChildren ? onToggle(node.id) : onSelect(node)}
-                disabled={!hasChildren && !isSelectableCategoryNode(node)}
-                title={hasChildren ? '展开/收起' : ''}
-              >
-                {hasChildren ? (isExpanded ? '▾' : '▸') : '•'}
-              </button>
-
-              <button
-                type="button"
-                className="ozon-category-tree-label"
-                onClick={() => onSelect(node)}
-                title={node.path}
-              >
-                <strong>{node.label}</strong>
-              </button>
-            </div>
-
-            {hasChildren && isExpanded && (
-              <CategoryTreeList
-                nodes={node.children}
-                expanded={expanded}
-                onToggle={onToggle}
-                onSelect={onSelect}
-                level={level + 1}
-              />
-            )}
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
 export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onToast }: Props) {
   const [form, setForm] = useState(() => createDraftForm(task));
-  const [activeStep, setActiveStep] = useState(0);
   const [message, setMessage] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const [lastSavedAt, setLastSavedAt] = useState('');
   const [shopLabel, setShopLabel] = useState('Ozon 店铺：未检查');
-  const [categoryQuery, setCategoryQuery] = useState(() => createDraftForm(task).categoryPath);
+  const [categoryQuery, setCategoryQuery] = useState('');
   const [categoryAttributes, setCategoryAttributes] = useState<OzonCategoryAttribute[]>([]);
   const [attributesLoading, setAttributesLoading] = useState(false);
   const [attributesMessage, setAttributesMessage] = useState('尚未加载类目特征');
   const [attributeReloadKey, setAttributeReloadKey] = useState(0);
   const [dynamicValues, setDynamicValues] = useState<Record<string, string>>(() => attributeValuesById(firstItemOf(task)));
   const [attemptedProduct, setAttemptedProduct] = useState(false);
-  const [attemptedFeatures, setAttemptedFeatures] = useState(false);
+  const [attemptedAttributes, setAttemptedAttributes] = useState(false);
   const [categoryTreeNodes, setCategoryTreeNodes] = useState<CategoryTreeViewNode[]>([]);
   const [categoryTreeLoading, setCategoryTreeLoading] = useState(false);
   const [categoryTreeMessage, setCategoryTreeMessage] = useState('');
-  const [showCategoryTree, setShowCategoryTree] = useState(true);
   const [expandedCategoryIds, setExpandedCategoryIds] = useState<Record<string, boolean>>({});
   const [dictionaryValueIds, setDictionaryValueIds] = useState<DictionaryValueIds>(() => attributeDictionaryIdsById(firstItemOf(task)));
+  const [showMoreAttributes, setShowMoreAttributes] = useState(false);
+  const [activeSection, setActiveSection] = useState<EditorSectionId>('main');
+  const [categoryDrawerOpen, setCategoryDrawerOpen] = useState(false);
+  const [pendingCategory, setPendingCategory] = useState<OzonCategoryEntry | null>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
 
   const brandAttribute = useMemo(
     () => categoryAttributes.find((attr) => attr.id === ATTR_BRAND) || null,
@@ -1168,9 +1104,34 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onTo
   async function translateVisibleDictionaryOptions(attr: OzonCategoryAttribute, options: OzonAttributeValue[], limit = 50) {
   }
 
-  const visibleFeatureAttrs = useMemo(
-    () => visibleCategoryAttributes(categoryAttributes, 'feature'),
-    [categoryAttributes],
+  const currentDraft = task.draft;
+
+  const variantOfDraft = useMemo(() => variantOf(currentDraft), [currentDraft]);
+  const variantRowsOfDraft = useMemo(() => variantRows(variantOfDraft), [variantOfDraft]);
+  const variantDimsOfDraft = useMemo(() => variantDimensions(variantOfDraft), [variantOfDraft]);
+
+  const variantDimensionAttrIds = useMemo(() => {
+    const ids = new Set<number>();
+    for (const dim of variantDimsOfDraft) {
+      const id = Number(dim.ozon_attribute_id || 0);
+      if (id > 0) ids.add(id);
+    }
+    return ids;
+  }, [variantDimsOfDraft]);
+
+  const moreCategoryAttributes = useMemo(
+    () => categoryAttributes
+      .filter((attr) => !CONTROLLED_ATTR_IDS.has(attr.id))
+      .filter((attr) => !isMediaAttributeName(attr))
+      .filter((attr) => !variantDimensionAttrIds.has(attr.id)),
+    [categoryAttributes, variantDimensionAttrIds],
+  );
+
+  const hiddenRequiredAttributes = useMemo(
+    () => moreCategoryAttributes.filter(
+      (attr) => attr.isRequired && !text(dynamicValues[String(attr.id)]),
+    ),
+    [moreCategoryAttributes, dynamicValues],
   );
 
   async function resolveDictionaryValueForSuggestion(attr: OzonCategoryAttribute, query: string): Promise<{ label: string; id: number } | null> {
@@ -1266,7 +1227,7 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onTo
 
   async function fillCategoryAttributesByAi(forceFresh = false) {
     if (attributeAiFilling) return;
-    const attrs = visibleFeatureAttrs;
+    const attrs = moreCategoryAttributes;
     if (!attrs.length) return;
 
     setAttributeAiFilledKey(attributeAutoFillKey);
@@ -1277,15 +1238,6 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onTo
       typeof task.draft.generated === 'object' &&
       (task.draft.generated as Record<string, unknown>).attribute_values;
     const values = Array.isArray(prefillValues) ? prefillValues : [];
-    console.log('[ozon-editor] prefill check:', {
-      hasDraft: !!task.draft,
-      hasGenerated: !!(task.draft && typeof task.draft.generated === 'object'),
-      generatedKeys: task.draft && typeof task.draft.generated === 'object'
-        ? Object.keys(task.draft.generated as Record<string, unknown>)
-        : [],
-      prefillType: typeof prefillValues,
-      valuesLen: values.length,
-    });
 
     if (values.length && !forceFresh) {
       setMessage('草稿已附带特征值，正在应用...');
@@ -1323,19 +1275,20 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onTo
 
   // Attribute values are pre-filled by the backend during generateOzonDraft.
   // They come from draft.items[0].attributes via attributeValuesById on mount.
-  // No auto AI fill on open — user clicks "AI 补填空特征" button to fill gaps.
+  // No auto AI fill on open — user clicks "AI 补全属性" button to fill gaps.
 
   useEffect(() => {
     const nextForm = createDraftForm(task);
     setForm(nextForm);
-    setCategoryQuery(nextForm.categoryPath);
     setDynamicValues(attributeValuesById(firstItemOf(task)));
     setDictionaryValueIds(attributeDictionaryIdsById(firstItemOf(task)));
     setCategoryAttributes([]);
     setMessage('');
-    setActiveStep(0);
+    setShowMoreAttributes(false);
+    setCategoryDrawerOpen(false);
+    setPendingCategory(null);
     setAttemptedProduct(false);
-    setAttemptedFeatures(false);
+    setAttemptedAttributes(false);
     setAttributeAiFilledKey('');
     setAttributeAiFilling(false);
   }, [task.key, task.draftId]);
@@ -1425,45 +1378,64 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onTo
     return () => { alive = false; };
   }, [attributeReloadKey, form.descriptionCategoryId, form.typeId]);
 
+  // Scroll spy: keep the right-hand nav in sync with the editor scroll container.
+  useEffect(() => {
+    const root = scrollRef.current;
+    if (!root) return;
+
+    const observer = new IntersectionObserver((entries) => {
+      let best: string | null = null;
+      let bestTop = Infinity;
+      for (const entry of entries) {
+        if (!entry.isIntersecting) continue;
+        const top = entry.boundingClientRect.top;
+        if (top < bestTop) {
+          bestTop = top;
+          best = entry.target.id;
+        }
+      }
+      if (best === 'ozon-section-main') setActiveSection('main');
+      else if (best === 'ozon-section-attributes') setActiveSection('attributes');
+      else if (best === 'ozon-section-variants') setActiveSection('variants');
+    }, { root, rootMargin: '0px 0px -55% 0px', threshold: 0 });
+
+    for (const id of ['ozon-section-main', 'ozon-section-attributes', 'ozon-section-variants']) {
+      const el = root.querySelector(`#${id}`);
+      if (el) observer.observe(el);
+    }
+
+    return () => observer.disconnect();
+  }, []);
+
   const productMissing = useMemo(() => collectProductPageMissing(form), [form]);
-  const featureMissing = useMemo(
-    () => collectFeatureMissing(form, dynamicValues, categoryAttributes),
-    [categoryAttributes, dynamicValues, form],
+  const attributeMissing = useMemo(
+    () => collectAttributeMissing(form, dynamicValues, moreCategoryAttributes),
+    [moreCategoryAttributes, dynamicValues, form],
   );
   const buildResult = useMemo(
-    () => buildDraft(task, form, dynamicValues, categoryAttributes, dictionaryValueIds),
-    [categoryAttributes, dictionaryValueIds, dynamicValues, form, task],
+    () => buildDraft(task, form, dynamicValues, categoryAttributes, dictionaryValueIds, moreCategoryAttributes),
+    [categoryAttributes, dictionaryValueIds, dynamicValues, form, moreCategoryAttributes, task],
   );
   const missing = buildResult?.missing || task.missingFields || task.draft?.missing || [];
   const firstItem = buildResult?.firstItem || firstItemOf(task);
-  const images = lineList(form.images).map(normalizeImageUrl).filter(Boolean).slice(0, 15);
-  const primaryImage = images[0] || '';
-  const attrCount = Array.isArray(firstItem.attributes) ? firstItem.attributes.length : 0;
   const canSubmit = Boolean(buildResult?.draft) && missing.length === 0 && !submitting;
-  const recommendationMissing = [
-    !form.brand.trim() ? '品牌' : '',
-    !form.description.trim() ? '俄语描述' : '',
-    normalizeTagsForPayload(form.tags) ? '' : '搜索词',
-  ].filter(Boolean);
-  const featureAttributes = visibleCategoryAttributes(categoryAttributes, 'feature');
-  const mediaAttributes = visibleCategoryAttributes(categoryAttributes, 'media');
-  const currentDraft = buildResult?.draft || task.draft;
-  const variant = variantOf(currentDraft);
-  const variantItems = variantRows(variant);
-  const variantDims = variantDimensions(variant);
+  const validationState: ValidationState =
+    submitting ? 'validating'
+      : !buildResult?.draft ? 'invalid'
+        : missing.length === 0 ? 'valid'
+          : 'invalid';
 
-  const visibleCategoryTree = useMemo(
-    () => filterCategoryTree(categoryTreeNodes, categoryQuery),
-    [categoryTreeNodes, categoryQuery],
+  const missingCounts = {
+    main: productMissing.length,
+    attributes: attributeMissing.length,
+    variants: 0,
+  };
+
+  const variantTable = useMemo(
+    () => buildVariantTableView(task, buildResult?.draft || task.draft, firstItem),
+    [buildResult?.draft, firstItem, task],
   );
-
-  useEffect(() => {
-    const query = String(categoryQuery || '').trim();
-    if (!query) return;
-
-    const nextExpanded = collectExpandedCategoryIds(visibleCategoryTree);
-    setExpandedCategoryIds((prev) => ({ ...prev, ...nextExpanded }));
-  }, [categoryQuery, visibleCategoryTree]);
+  const visibleVariantDims = variantTable.dims.filter((dim) => dim.distinguishes_variants === true);
 
   function updateField<K extends keyof DraftForm>(key: K, value: DraftForm[K]) {
     setForm((prev) => ({ ...prev, [key]: value }));
@@ -1484,7 +1456,6 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onTo
       typeId: String(categoryTypeId(entry)),
       categoryPath: entry.path || entry.keyword || '',
     }));
-    setCategoryQuery(entry.path || entry.keyword || '');
     setMessage('已选择 Ozon 类目，正在加载该类目的特征。');
   }
 
@@ -1516,32 +1487,13 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onTo
     setExpandedCategoryIds((prev) => ({ ...prev, [id]: !prev[id] }));
   }
 
-  function applyCategoryTreeNode(node: CategoryTreeViewNode) {
-    if (!isSelectableCategoryNode(node)) {
-      toggleCategoryNode(node.id);
-      return;
-    }
-
-    applyCategory(treeNodeToCategoryEntry(node));
-  }
-
-  function goToStep(index: number) {
-    if (index > 0 && productMissing.length) {
-      setAttemptedProduct(true);
-      setMessage(`商品信息页还缺：${productMissing.join('、')}`);
-      return;
-    }
-    if (index > 2 && featureMissing.length) {
-      setAttemptedFeatures(true);
-      setMessage(`特征页还缺：${featureMissing.join('、')}`);
-      return;
-    }
-    setActiveStep(index);
-    if (index === 3) applyDraft(false);
+  function navigateToSection(id: EditorSectionId) {
+    document.getElementById(`ozon-section-${id}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    setActiveSection(id);
   }
 
   function applyDraft(showToast = true): DraftBuildResult | null {
-    const result = buildDraft(task, form, dynamicValues, categoryAttributes, dictionaryValueIds);
+    const result = buildDraft(task, form, dynamicValues, categoryAttributes, dictionaryValueIds, moreCategoryAttributes);
     if (!result) {
       setMessage('当前任务还没有可编辑的 Ozon 草稿。');
       return null;
@@ -1560,26 +1512,27 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onTo
     };
 
     onTaskUpdate?.(task.key, patch);
+    setLastSavedAt(new Date().toLocaleTimeString());
     if (showToast) onToast?.(result.missing.length ? '已保存，仍有必填项待补充' : '已保存 Ozon 草稿');
     setMessage(result.missing.length ? `仍需补充：${formatMissingFields(result.missing)}` : '已保存，payload 已同步更新。');
     return result;
   }
 
-  async function copyPayload() {
+  function handleValidate() {
+    setAttemptedProduct(true);
+    setAttemptedAttributes(true);
     const result = applyDraft(false);
     if (!result) return;
-    try {
-      await navigator.clipboard.writeText(JSON.stringify({ items: result.draft.items }, null, 2));
-      onToast?.('已复制 Ozon 回传 Payload');
-      setMessage('已复制 /v3/product/import 的 items payload。');
-    } catch {
-      setMessage('复制失败，请稍后重试。');
+    if (result.missing.length) {
+      onToast?.(`校验未通过：${formatMissingFields(result.missing)}`);
+    } else {
+      onToast?.('校验通过，可以提交 Ozon');
     }
   }
 
   async function submitDraft() {
     setAttemptedProduct(true);
-    setAttemptedFeatures(true);
+    setAttemptedAttributes(true);
     const result = applyDraft(false);
     if (!result) return;
     if (result.missing.length) {
@@ -1637,397 +1590,389 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onTo
     );
   }
 
+  const missingDims = productMissing.filter((item) => item.startsWith('包装'));
+
   return (
-    <div className="ozon-draft-converter">
-      <div className="ozon-draft-topbar">
+    <div className="ozon-ai-edit-page">
+      <div className="ozon-ai-edit-topbar">
         <div>
           <h4>Ozon 上架转换</h4>
           <span>{sourceSummary(task)}</span>
         </div>
-        <div className="ozon-draft-top-actions">
+        <div className="ozon-ai-edit-top-actions">
           <span className={shopLabel.includes('已绑定') ? 'ready' : ''}>{shopLabel}</span>
-          <button type="button" disabled={!canSubmit} onClick={submitDraft}>
-            {submitting ? '提交中...' : '提交到 Ozon'}
-          </button>
+          <span className={`ozon-ai-edit-draft-status ${missing.length ? 'warn' : ''}`}>{draftStatusLabel(task.status)}</span>
+          <button type="button" onClick={onBackTo1688}>关闭</button>
         </div>
-      </div>
-
-      <div className="ozon-draft-steps">
-        {steps.map((step, index) => (
-          <button
-            key={step}
-            type="button"
-            className={`ozon-draft-step-btn ${activeStep === index ? 'active' : ''}`}
-            onClick={() => goToStep(index)}
-          >
-            {step}
-          </button>
-        ))}
       </div>
 
       {message && <div className={`ozon-draft-notice ${missing.length ? 'warn' : 'ready'}`}>{message}</div>}
 
-      <div className="ozon-draft-page-shell">
-        {activeStep === 0 && (
-          <section className="ozon-draft-step-page">
-            <p className="ozon-draft-page-hint">先确认商品基础信息和 Ozon 类目。没有类目和类型时，不能进入特征页。</p>
-
-            <label className="ozon-draft-field wide">
-              <span>名称</span>
-              <input value={form.name} onChange={(event) => updateField('name', event.target.value)} />
-            </label>
-
-            <label className="ozon-draft-field wide ozon-category-field">
-              <span>类目和类型 *</span>
-              <input
-                value={categoryQuery}
-                placeholder="请选择或搜索 Ozon 类目和类型"
-                onChange={(event) => {
-                  setCategoryQuery(event.target.value);
-                  updateField('categoryPath', event.target.value);
-                  updateField('descriptionCategoryId', '');
-                  updateField('typeId', '');
-                }}
-              />
-              <FieldError show={attemptedProduct && productMissing.includes('类目和类型')} text="请选择带 type_id 的 Ozon 末级类目" />
-              <div className="ozon-category-results">
-                <div className="ozon-category-results-head">
-                  <span>{categoryTreeLoading ? '正在加载类目...' : 'Ozon 类目'}</span>
-                  <div className="ozon-category-head-actions">
-                    <button type="button" onClick={() => setShowCategoryTree((value) => !value)}>
-                      {showCategoryTree ? '隐藏类目树' : '浏览类目树'}
-                    </button>
-                    <button type="button" onClick={() => loadCategoryTree(true)}>
-                      同步 Ozon 最新类目
-                    </button>
+      <div className="ozon-ai-edit-scroll" ref={scrollRef}>
+        <div className="ozon-ai-edit-layout">
+          <main className="ozon-ai-edit-center">
+            <section id="ozon-section-main" className="ozon-form-card">
+              <div className="ozon-form-card-header">主要信息</div>
+              <div className="ozon-attr-grid">
+                <div className="ozon-attr-item">
+                  <label className="ozon-attr-label">上架店铺</label>
+                  <div className="ozon-attr-control">
+                    <input readOnly value={shopLabel} title="当前绑定的 Ozon 店铺" />
                   </div>
                 </div>
 
-                {showCategoryTree && (
-                  <div className="ozon-category-tree-panel">
-                    {categoryTreeMessage && (
-                      <div className="ozon-category-tree-hint">{categoryTreeMessage}</div>
-                    )}
-                    {visibleCategoryTree.length > 0 ? (
-                      <CategoryTreeList
-                        nodes={visibleCategoryTree}
-                        expanded={expandedCategoryIds}
-                        onToggle={toggleCategoryNode}
-                        onSelect={applyCategoryTreeNode}
+                <div className="ozon-attr-item">
+                  <label className="ozon-attr-label">Ozon 类目 <span className="req">*</span></label>
+                  <div className="ozon-attr-control">
+                    <div className="ozon-category-current">
+                      <span className={form.categoryPath ? '' : 'empty'}>{form.categoryPath || '未选择类目'}</span>
+                      <button type="button" onClick={() => setCategoryDrawerOpen(true)}>更换类目</button>
+                    </div>
+                  </div>
+                  <FieldError show={attemptedProduct && productMissing.includes('类目和类型')} text="请选择带 type_id 的 Ozon 末级类目" />
+                </div>
+
+                <div className="ozon-attr-item full">
+                  <label className="ozon-attr-label">商品标题 <span className="req">*</span></label>
+                  <div className="ozon-attr-control">
+                    <input
+                      value={form.name}
+                      onChange={(event) => updateField('name', event.target.value)}
+                      placeholder="商品标题（俄语）"
+                    />
+                  </div>
+                  <FieldError show={attemptedProduct && missing.includes('俄语标题')} text="俄语标题不能为空" />
+                </div>
+
+                <div className="ozon-attr-item">
+                  <label className="ozon-attr-label">品牌 <span className="req">*</span>{brandIsDictionary ? <span className="unit-warning">（字典）</span> : null}</label>
+                  <div className="ozon-attr-control">
+                    {brandAttribute && brandIsDictionary ? (
+                      <BrandDictionaryField
+                        attr={brandAttribute}
+                        value={form.brand}
+                        valueIds={dictionaryValueIds[String(ATTR_BRAND)] || {}}
+                        descriptionCategoryId={intForPayload(form.descriptionCategoryId)}
+                        typeId={intForPayload(form.typeId)}
+                        onChange={(nextValue, nextIds) => {
+                          updateField('brand', nextValue);
+                          updateDictionaryValueIds(ATTR_BRAND, nextIds);
+                        }}
                       />
                     ) : (
-                      <div className="ozon-category-empty">
-                        {categoryTreeMessage || '未找到匹配的可选类目。'}
-                      </div>
+                      <input value={form.brand} onChange={(event) => updateField('brand', event.target.value)} placeholder="如 NO NAME" />
                     )}
                   </div>
-                )}
-              </div>
-            </label>
+                </div>
 
-            <label className="ozon-draft-field wide">
-              <span>条形码</span>
-              <input value={form.barcode} onChange={(event) => updateField('barcode', event.target.value)} />
-            </label>
-
-            <label className="ozon-draft-field wide">
-              <span>货号 *</span>
-              <input value={form.offerId} onChange={(event) => updateField('offerId', event.target.value)} />
-              <FieldError show={attemptedProduct && productMissing.includes('货号')} text="货号不能为空" />
-            </label>
-
-            <div className="ozon-draft-form-grid two">
-              <label className="ozon-draft-field">
-                <span>您的价格，¥ *</span>
-                <input value={form.price} onChange={(event) => updateField('price', event.target.value)} inputMode="decimal" />
-                <FieldError show={attemptedProduct && productMissing.includes('价格')} text="价格必须大于 0" />
-              </label>
-              <label className="ozon-draft-field">
-                <span>折扣前价格</span>
-                <input value={form.oldPrice} onChange={(event) => updateField('oldPrice', event.target.value)} inputMode="decimal" />
-              </label>
-            </div>
-
-            <label className="ozon-draft-field wide">
-              <span>包装长度，毫米 *</span>
-              <input value={form.depth} onChange={(event) => updateField('depth', event.target.value)} inputMode="numeric" />
-              <FieldError show={attemptedProduct && productMissing.includes('包装长度')} text="包装长度必须大于 0" />
-            </label>
-            <label className="ozon-draft-field wide">
-              <span>包装宽度，毫米 *</span>
-              <input value={form.width} onChange={(event) => updateField('width', event.target.value)} inputMode="numeric" />
-              <FieldError show={attemptedProduct && productMissing.includes('包装宽度')} text="包装宽度必须大于 0" />
-            </label>
-            <label className="ozon-draft-field wide">
-              <span>包装高度，毫米 *</span>
-              <input value={form.height} onChange={(event) => updateField('height', event.target.value)} inputMode="numeric" />
-              <FieldError show={attemptedProduct && productMissing.includes('包装高度')} text="包装高度必须大于 0" />
-            </label>
-            <label className="ozon-draft-field wide">
-              <span>含包装重量，克 *</span>
-              <input value={form.weight} onChange={(event) => updateField('weight', event.target.value)} inputMode="numeric" />
-              <FieldError show={attemptedProduct && productMissing.includes('含包装重量')} text="重量必须大于 0" />
-            </label>
-
-            <div className="ozon-draft-nav-row">
-              <button type="button" className="primary" onClick={() => goToStep(1)}>下一步</button>
-            </div>
-          </section>
-        )}
-
-        {activeStep === 1 && (
-          <section className="ozon-draft-step-page">
-            <div className="ozon-draft-status-row">
-              <span>{attributesLoading ? '正在加载类目特征...' : attributesMessage}</span>
-              <button
-                type="button"
-                onClick={() => setAttributeReloadKey((value) => value + 1)}
-              >
-                加载类目特征
-              </button>
-            </div>
-
-            <div className="ozon-draft-form-grid two">
-              <label className="ozon-draft-field">
-                <span>
-                  品牌 *
-                  {brandIsDictionary ? '（字典）' : ''}
-                </span>
-                {brandAttribute && brandIsDictionary ? (
-                  <BrandDictionaryField
-                    attr={brandAttribute}
-                    value={form.brand}
-                    valueIds={dictionaryValueIds[String(ATTR_BRAND)] || {}}
-                    descriptionCategoryId={intForPayload(form.descriptionCategoryId)}
-                    typeId={intForPayload(form.typeId)}
-                    onChange={(nextValue, nextIds) => {
-                      updateField('brand', nextValue);
-                      updateDictionaryValueIds(ATTR_BRAND, nextIds);
-                    }}
-                  />
-                ) : (
-                  <input value={form.brand} onChange={(event) => updateField('brand', event.target.value)} />
-                )}
-              </label>
-              <label className="ozon-draft-field">
-                <span>型号名称 *</span>
-                <input value={form.model} onChange={(event) => updateField('model', event.target.value)} />
-                <FieldError show={attemptedFeatures && featureMissing.includes('型号名称')} text="型号名称不能为空" />
-              </label>
-            </div>
-
-            <label className="ozon-draft-field wide">
-              <span>简介</span>
-              <textarea value={form.description} onChange={(event) => updateField('description', event.target.value)} rows={7} />
-            </label>
-
-            <label className="ozon-draft-field wide">
-              <span>#主题标签</span>
-              <textarea value={form.tags} onChange={(event) => updateField('tags', event.target.value)} rows={5} placeholder="#keyword 每行一个" />
-            </label>
-
-            <div className="ozon-draft-dynamic-list">
-              <div className="ozon-draft-dynamic-head">
-                <strong>类目特征</strong>
-                <span>{featureAttributes.length ? `${featureAttributes.length} 项` : '未返回额外特征，可用自定义属性补充'}</span>
-                <button type="button" className="glass-btn-secondary" onClick={() => fillCategoryAttributesByAi(true)} disabled={attributeAiFilling} style={{ height: 30, fontSize: 11, padding: '0 10px' }}>
-                  {attributeAiFilling ? 'AI 填写中...' : 'AI 补填空特征'}
-                </button>
-              </div>
-              {featureAttributes.map((attr) => (
-                <label key={attr.id} className="ozon-draft-field wide">
-                  <span>
-                    {attr.name}{attr.isRequired ? ' *' : ''}{attr.dictionaryId ? '（字典）' : ''}{attr.isAspect ? '（规格/Aspect）' : ''}
-                  </span>
-                  {attr.dictionaryId ? (
-                    <DictionaryAttributeField
-                      attr={attr}
-                      value={dynamicValues[String(attr.id)] || ''}
-                      valueIds={dictionaryValueIds[String(attr.id)] || {}}
-                      descriptionCategoryId={intForPayload(form.descriptionCategoryId)}
-                      typeId={intForPayload(form.typeId)}
-                      onLoadOptions={(a, opts) => { void translateVisibleDictionaryOptions(a, opts); }}
-                      getDisplayLabel={(attrId, option) => dictionaryDisplayLabelForOption(attrId, option)}
-                      onChange={(nextValue, nextIds) => {
-                        updateDynamicValue(attr.id, nextValue);
-                        updateDictionaryValueIds(attr.id, nextIds);
-                        const payloadMap = { ...dictionaryPayloadValues[String(attr.id)] || {} };
-                        for (const [key] of Object.entries(nextIds)) {
-                          payloadMap[key] = key;
-                        }
-                        setDictionaryPayloadValues((prev) => ({ ...prev, [String(attr.id)]: payloadMap }));
-                      }}
-                    />
-                  ) : attr.maxValueCount !== 1 || attr.isCollection ? (
-                    <textarea
-                      value={dynamicValues[String(attr.id)] || ''}
-                      onChange={(event) => updateDynamicValue(attr.id, event.target.value)}
-                      rows={3}
-                      placeholder="多个值可换行填写"
-                    />
-                  ) : (
+                <div className="ozon-attr-item">
+                  <label className="ozon-attr-label">含包装重量（g）<span className="unit-warning">注意单位是克(g)</span></label>
+                  <div className="ozon-attr-control">
                     <input
-                      value={dynamicValues[String(attr.id)] || ''}
-                      onChange={(event) => updateDynamicValue(attr.id, event.target.value)}
-                      placeholder="填写属性值"
+                      value={form.weight}
+                      onChange={(event) => updateField('weight', event.target.value)}
+                      inputMode="numeric"
+                      placeholder="如: 800"
                     />
-                  )}
-                  <FieldError show={attemptedFeatures && attr.isRequired && !text(dynamicValues[String(attr.id)])} text="该类目必填特征不能为空" />
-                </label>
-              ))}
-            </div>
-
-            <label className="ozon-draft-field wide">
-              <span>其他类目特征</span>
-              <textarea value={form.customAttributes} onChange={(event) => updateField('customAttributes', event.target.value)} rows={4} placeholder="属性ID=属性值，每行一个，例如：85=NO NAME" />
-            </label>
-
-            <div className="ozon-draft-nav-row">
-              <button type="button" onClick={() => goToStep(0)}>返回</button>
-              <button type="button" className="primary" onClick={() => goToStep(2)}>下一步</button>
-            </div>
-          </section>
-        )}
-
-        {activeStep === 2 && (
-          <section className="ozon-draft-step-page">
-            <div className="ozon-draft-media-layout">
-              <PreviewImage src={primaryImage} />
-              <div className="ozon-draft-media-summary">
-                <span>图片数量</span>
-                <strong>{images.length}</strong>
-                <p>{primaryImage || '请至少保留一张可访问图片 URL'}</p>
-              </div>
-            </div>
-            <label className="ozon-draft-field wide">
-              <span>图片 URL</span>
-              <textarea value={form.images} onChange={(event) => updateField('images', event.target.value)} rows={8} placeholder="每行一个图片 URL，第一张会作为主图。" />
-            </label>
-
-            <div className="ozon-draft-dynamic-list">
-              <div className="ozon-draft-dynamic-head">
-                <strong>视频 / 富内容相关字段</strong>
-                <span>{mediaAttributes.length ? `${mediaAttributes.length} 项` : '该类目暂无媒体扩展字段'}</span>
-              </div>
-              {mediaAttributes.map((attr) => (
-                <label key={attr.id} className="ozon-draft-field wide">
-                  <span>{attr.name}{attr.isRequired ? ' *' : ''}{attr.dictionaryId ? '（字典）' : ''}</span>
-                  {attr.dictionaryId ? (
-                    <DictionaryAttributeField
-                      attr={attr}
-                      value={dynamicValues[String(attr.id)] || ''}
-                      valueIds={dictionaryValueIds[String(attr.id)] || {}}
-                      descriptionCategoryId={intForPayload(form.descriptionCategoryId)}
-                      typeId={intForPayload(form.typeId)}
-                      onLoadOptions={(a, opts) => { void translateVisibleDictionaryOptions(a, opts); }}
-                      getDisplayLabel={(attrId, option) => dictionaryDisplayLabelForOption(attrId, option)}
-                      onChange={(nextValue, nextIds) => {
-                        updateDynamicValue(attr.id, nextValue);
-                        updateDictionaryValueIds(attr.id, nextIds);
-                        const payloadMap = { ...dictionaryPayloadValues[String(attr.id)] || {} };
-                        for (const [key] of Object.entries(nextIds)) {
-                          payloadMap[key] = key;
-                        }
-                        setDictionaryPayloadValues((prev) => ({ ...prev, [String(attr.id)]: payloadMap }));
-                      }}
-                    />
-                  ) : (
-                    <textarea
-                      value={dynamicValues[String(attr.id)] || ''}
-                      onChange={(event) => updateDynamicValue(attr.id, event.target.value)}
-                      rows={attr.maxValueCount !== 1 || attr.isCollection ? 3 : 2}
-                      placeholder="填写媒体相关属性"
-                    />
-                  )}
-                </label>
-              ))}
-            </div>
-
-            <div className="ozon-draft-nav-row">
-              <button type="button" onClick={() => goToStep(1)}>返回</button>
-              <button type="button" className="primary" onClick={() => goToStep(3)}>下一步</button>
-            </div>
-          </section>
-        )}
-
-        {activeStep === 3 && (
-          <section className="ozon-draft-step-page">
-            <div className="ozon-draft-review-grid">
-              <div>
-                <span>接口</span>
-                <strong>ProductAPI_ImportProductsV3</strong>
-                <small>/v3/product/import</small>
-              </div>
-              <div>
-                <span>首个商品</span>
-                <strong>{text(firstItem.offer_id) || '-'}</strong>
-                <small>{text(firstItem.name) || '未填写标题'}</small>
-              </div>
-              <div>
-                <span>属性数量</span>
-                <strong>{attrCount}</strong>
-                <small>{recommendationMissing.length ? `建议补充：${recommendationMissing.join('、')}` : '核心内容完整'}</small>
-              </div>
-            </div>
-
-            <div className="ozon-draft-checklist">
-              {missing.length ? (
-                missing.map((field) => <span key={field} className="missing">{formatMissingFields([field])}</span>)
-              ) : (
-                <span className="ready">必填项已完整</span>
-              )}
-              {recommendationMissing.map((field) => <span key={field} className="soft">建议补充 {field}</span>)}
-            </div>
-
-            {variantItems.length > 0 && (
-              <div className="ozon-variant-panel">
-                <div className="ozon-variant-head">
-                  <div>
-                    <span>变体计划</span>
-                    <strong>{variantItems.length} 个 SKU</strong>
                   </div>
-                  <small>{text(variant.status) || '待确认'} / Ozon 属性 {text(variant.group_attribute_id) || '9048'}</small>
+                  <FieldError show={attemptedProduct && productMissing.includes('含包装重量')} text="重量必须大于 0" />
                 </div>
-                <div className="ozon-variant-dimensions">
-                  {variantDims.length ? (
-                    variantDims.map((dimension) => (
-                      <span key={text(dimension.source_name)}>
-                        {text(dimension.source_name)}: {Array.isArray(dimension.values) ? dimension.values.map(text).filter(Boolean).join(' / ') : '-'}
-                      </span>
-                    ))
-                  ) : (
-                    <span>未解析到规格维度</span>
-                  )}
-                </div>
-                <div className="ozon-variant-list">
-                  {variantItems.slice(0, 12).map((item, index) => (
-                    <div key={`${text(item.offer_id)}-${index}`} className="ozon-variant-row">
-                      <strong>{text(item.offer_id) || `SKU ${index + 1}`}</strong>
-                      <span>{variantValuesText(item.values) || text(item.source_sku_name) || '未解析规格'}</span>
-                      <small>库存 {text(item.stock) || '0'} / 价格 {text(item.price) || '-'}</small>
+
+                <div className="ozon-attr-item full">
+                  <label className="ozon-attr-label">包装尺寸（mm）<span className="unit-warning">注意单位是毫米(mm)</span></label>
+                  <div className="ozon-dimension-row">
+                    <div className="ozon-dimension-field">
+                      <input value={form.depth} onChange={(event) => updateField('depth', event.target.value)} inputMode="numeric" placeholder="长" />
+                      <span className="dimension-hint">长</span>
                     </div>
-                  ))}
-                  {variantItems.length > 12 && <small>还有 {variantItems.length - 12} 个 SKU 未展开显示。</small>}
+                    <span className="dimension-sep">×</span>
+                    <div className="ozon-dimension-field">
+                      <input value={form.width} onChange={(event) => updateField('width', event.target.value)} inputMode="numeric" placeholder="宽" />
+                      <span className="dimension-hint">宽</span>
+                    </div>
+                    <span className="dimension-sep">×</span>
+                    <div className="ozon-dimension-field">
+                      <input value={form.height} onChange={(event) => updateField('height', event.target.value)} inputMode="numeric" placeholder="高" />
+                      <span className="dimension-hint">高</span>
+                    </div>
+                  </div>
+                  <FieldError show={attemptedProduct && missingDims.length > 0} text={`包装尺寸必须大于 0（${missingDims.join('、')}）`} />
+                </div>
+
+                <div className="ozon-attr-item">
+                  <label className="ozon-attr-label">价格（¥）<span className="req">*</span></label>
+                  <div className="ozon-attr-control">
+                    <input
+                      value={form.price}
+                      onChange={(event) => updateField('price', event.target.value)}
+                      inputMode="decimal"
+                      placeholder="0.00"
+                    />
+                  </div>
+                  <FieldError show={attemptedProduct && productMissing.includes('价格')} text="价格必须大于 0" />
+                </div>
+
+                <div className="ozon-attr-item">
+                  <label className="ozon-attr-label">划线价（¥）</label>
+                  <div className="ozon-attr-control">
+                    <input
+                      value={form.oldPrice}
+                      onChange={(event) => updateField('oldPrice', event.target.value)}
+                      inputMode="decimal"
+                      placeholder="0=清空"
+                    />
+                  </div>
+                </div>
+
+                <div className="ozon-attr-item full">
+                  <label className="ozon-attr-label">货号 <span className="req">*</span></label>
+                  <div className="ozon-attr-control">
+                    <input value={form.offerId} onChange={(event) => updateField('offerId', event.target.value)} placeholder="Ozon 商品货号" />
+                  </div>
+                  <FieldError show={attemptedProduct && productMissing.includes('货号')} text="货号不能为空" />
                 </div>
               </div>
-            )}
+            </section>
 
-            <pre className="ozon-draft-payload-preview">
-              {buildResult ? JSON.stringify({ variant: buildResult.draft.variant || null, items: buildResult.draft.items }, null, 2) : '暂无 payload'}
-            </pre>
+            <section id="ozon-section-attributes" className="ozon-form-card">
+              <div className="ozon-form-card-header">
+                <span>产品属性</span>
+                <div className="ozon-attr-header-actions">
+                  {hiddenRequiredAttributes.length > 0 && !showMoreAttributes && (
+                    <span className="ozon-more-attrs-hint">还有 {hiddenRequiredAttributes.length} 个必填项</span>
+                  )}
+                  <button
+                    type="button"
+                    className={`ozon-more-attrs-btn ${hiddenRequiredAttributes.length > 0 && !showMoreAttributes ? 'warn' : ''}`}
+                    onClick={() => setShowMoreAttributes((value) => !value)}
+                  >
+                    <span className="ozon-more-attrs-arrow">{showMoreAttributes ? '↑' : '↓'}</span>
+                    {showMoreAttributes ? '收起更多属性' : '填写更多属性'}
+                  </button>
+                </div>
+              </div>
 
-            <div className="ozon-draft-nav-row">
-              <button type="button" onClick={() => goToStep(2)}>返回</button>
-              <button type="button" className="primary" onClick={() => applyDraft(true)}>保存草稿</button>
-              <button type="button" onClick={copyPayload}>复制 Payload</button>
-              <button type="button" disabled={!canSubmit} onClick={submitDraft}>
-                {submitting ? '提交中...' : '提交到 Ozon'}
-              </button>
-              <button type="button" onClick={onBackTo1688}>返回 1688</button>
-            </div>
-          </section>
-        )}
+              <div className="ozon-attrs-status-row">
+                <span>{attributesLoading ? '正在加载类目特征...' : attributesMessage}</span>
+                <button type="button" onClick={() => setAttributeReloadKey((value) => value + 1)}>重新加载</button>
+              </div>
+
+              <div className="ozon-attr-grid">
+                <div className="ozon-attr-item">
+                  <label className="ozon-attr-label">型号名称 <span className="req">*</span></label>
+                  <div className="ozon-attr-control">
+                    <input value={form.model} onChange={(event) => updateField('model', event.target.value)} placeholder="型号名称" />
+                  </div>
+                  <FieldError show={attemptedAttributes && attributeMissing.includes('型号名称')} text="型号名称不能为空" />
+                </div>
+
+                <div className="ozon-attr-item">
+                  <label className="ozon-attr-label">条形码</label>
+                  <div className="ozon-attr-control">
+                    <input value={form.barcode} onChange={(event) => updateField('barcode', event.target.value)} placeholder="条形码（可选）" />
+                  </div>
+                </div>
+
+                <div className="ozon-attr-item full">
+                  <label className="ozon-attr-label">#主题标签</label>
+                  <div className="ozon-attr-control">
+                    <textarea
+                      value={form.tags}
+                      onChange={(event) => updateField('tags', event.target.value)}
+                      rows={4}
+                      placeholder="#keyword 每行一个"
+                    />
+                  </div>
+                </div>
+
+                <div className="ozon-attr-item full">
+                  <label className="ozon-attr-label">简介 / 描述</label>
+                  <div className="ozon-attr-control">
+                    <textarea
+                      value={form.description}
+                      onChange={(event) => updateField('description', event.target.value)}
+                      rows={6}
+                      placeholder="商品描述（俄语）"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {showMoreAttributes && (
+                <div className="ozon-other-attrs-block">
+                  <div className="ozon-other-attrs-divider">
+                    <span>当前类目专有属性</span>
+                    <small>{moreCategoryAttributes.length} 项</small>
+                  </div>
+                  <div className="ozon-other-attr-grid">
+                    {moreCategoryAttributes.map((attr) => (
+                      <div key={attr.id} className="ozon-other-attr-item">
+                        <label className="ozon-attr-label ozon-other-attr-label">
+                          {attr.name}{attr.isRequired ? <span className="req">*</span> : null}
+                        </label>
+                        <div className="ozon-attr-control ozon-other-attr-control">
+                          {attr.dictionaryId ? (
+                            <DictionaryAttributeField
+                              attr={attr}
+                              value={dynamicValues[String(attr.id)] || ''}
+                              valueIds={dictionaryValueIds[String(attr.id)] || {}}
+                              descriptionCategoryId={intForPayload(form.descriptionCategoryId)}
+                              typeId={intForPayload(form.typeId)}
+                              onLoadOptions={(a, opts) => { void translateVisibleDictionaryOptions(a, opts); }}
+                              getDisplayLabel={(attrId, option) => dictionaryDisplayLabelForOption(attrId, option)}
+                              onChange={(nextValue, nextIds) => {
+                                updateDynamicValue(attr.id, nextValue);
+                                updateDictionaryValueIds(attr.id, nextIds);
+                                const payloadMap = { ...dictionaryPayloadValues[String(attr.id)] || {} };
+                                for (const [key] of Object.entries(nextIds)) {
+                                  payloadMap[key] = key;
+                                }
+                                setDictionaryPayloadValues((prev) => ({ ...prev, [String(attr.id)]: payloadMap }));
+                              }}
+                            />
+                          ) : attr.maxValueCount !== 1 || attr.isCollection ? (
+                            <textarea
+                              value={dynamicValues[String(attr.id)] || ''}
+                              onChange={(event) => updateDynamicValue(attr.id, event.target.value)}
+                              rows={3}
+                              placeholder="多个值可换行填写"
+                            />
+                          ) : (
+                            <input
+                              value={dynamicValues[String(attr.id)] || ''}
+                              onChange={(event) => updateDynamicValue(attr.id, event.target.value)}
+                              placeholder={attr.description || '填写属性值'}
+                            />
+                          )}
+                        </div>
+                        {attemptedAttributes && attr.isRequired && !text(dynamicValues[String(attr.id)]) && (
+                          <small className="ozon-attr-error-text ozon-other-attr-error">该类目必填属性不能为空</small>
+                        )}
+                      </div>
+                    ))}
+                    {moreCategoryAttributes.length === 0 && (
+                      <div className="ozon-other-attr-empty">该类目没有更多专有属性</div>
+                    )}
+                  </div>
+                </div>
+              )}
+            </section>
+
+            <section id="ozon-section-variants" className="ozon-form-card">
+              <div className="ozon-form-card-header">
+                <span>变体设置</span>
+                <div className="ozon-variant-header-meta">
+                  <span>{variantTable.rows.length} 个 SKU</span>
+                  <small>{variantRowsOfDraft.length > 0 ? '来自 1688 SKU 规格解析' : '商品级主图已带入首行'}</small>
+                </div>
+              </div>
+
+              <div className="ozon-variant-table-wrap">
+                <table className="ozon-variant-table">
+                  <thead>
+                    <tr>
+                      <th className="col-idx">#</th>
+                      <th>SKU 名称 <span className="req">*</span></th>
+                      <th>图片</th>
+                      <th>货号 <span className="req">*</span></th>
+                      <th>售价 <span className="req">*</span></th>
+                      <th>库存</th>
+                      {visibleVariantDims.map((dim) => (
+                        <th key={text(dim.source_name)} title={text(dim.ozon_attribute_name)}>{text(dim.source_name)}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {variantTable.rows.map((row, index) => (
+                      <tr key={row.key}>
+                        <td className="col-idx">{index + 1}</td>
+                        <td className="col-sku-name">{row.skuName}</td>
+                        <td className="col-images">
+                          <div className="variant-img-list" title="变体图片（只读预览）">
+                            {row.images.length ? (
+                              row.images.slice(0, 3).map((img, ii) => (
+                                <div key={ii} className="variant-img-item">
+                                  <img src={img} alt="" />
+                                  {ii === 2 && row.images.length > 3 && (
+                                    <div className="variant-img-overlay">+{row.images.length - 3}</div>
+                                  )}
+                                </div>
+                              ))
+                            ) : (
+                              <div className="variant-img-placeholder">暂无图片</div>
+                            )}
+                          </div>
+                        </td>
+                        <td className="col-offer-id">{row.offerId || '—'}</td>
+                        <td className="col-price">{row.price || '—'}</td>
+                        <td className="col-stock">{row.stock || '0'}</td>
+                        {visibleVariantDims.map((dim) => (
+                          <td key={text(dim.source_name)} className="col-dim">{text(row.values[text(dim.source_name)]) || '—'}</td>
+                        ))}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              {visibleVariantDims.length > 0 && (
+                <div className="ozon-variant-dims-hint">
+                  变体维度：{visibleVariantDims.map((dim) => text(dim.source_name)).join(' / ')}
+                  {variantRowsOfDraft.some((row) => Number(objectOf(row).status) > 0) ? '' : ''}
+                </div>
+              )}
+            </section>
+          </main>
+
+          <aside className="ozon-ai-edit-nav">
+            <OzonEditorNav
+              activeSection={activeSection}
+              missingCounts={missingCounts}
+              onNavigate={navigateToSection}
+            />
+          </aside>
+        </div>
       </div>
+
+      <OzonEditorBottomBar
+        submitting={submitting}
+        hasDraft={Boolean(task.draft)}
+        missingCount={missing.length}
+        validationState={validationState}
+        lastSavedAt={lastSavedAt}
+        aiFilling={attributeAiFilling}
+        onSave={() => applyDraft(true)}
+        onValidate={handleValidate}
+        onSubmit={submitDraft}
+        onBack={onBackTo1688}
+        onAiFillAttributes={() => fillCategoryAttributesByAi(false)}
+      />
+
+      <OzonCategoryDrawer
+        open={categoryDrawerOpen}
+        currentPath={form.categoryPath}
+        query={categoryQuery}
+        onQueryChange={setCategoryQuery}
+        treeNodes={categoryTreeNodes}
+        treeLoading={categoryTreeLoading}
+        treeMessage={categoryTreeMessage}
+        expandedIds={expandedCategoryIds}
+        onToggleExpand={toggleCategoryNode}
+        onSelectNode={(node) => { if (isSelectableCategoryNode(node)) setPendingCategory(treeNodeToCategoryEntry(node)); }}
+        pendingEntry={pendingCategory}
+        onConfirm={() => {
+          if (pendingCategory) {
+            applyCategory(pendingCategory);
+            setPendingCategory(null);
+            setCategoryDrawerOpen(false);
+          }
+        }}
+        onCancel={() => {
+          setPendingCategory(null);
+          setCategoryDrawerOpen(false);
+        }}
+        onSyncTree={() => loadCategoryTree(true)}
+      />
     </div>
   );
 }
