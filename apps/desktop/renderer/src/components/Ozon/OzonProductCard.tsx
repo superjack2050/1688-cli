@@ -7,7 +7,6 @@ type Props = {
   task: OzonListingTask;
   onInspect: (task: OzonListingTask) => void;
   onCopyDraft?: (task: OzonListingTask) => void;
-  onSubmitDraft?: (task: OzonListingTask) => void;
   onBackTo1688?: () => void;
 };
 
@@ -70,9 +69,8 @@ function text(value: unknown): string {
   return String(value).trim();
 }
 
-export default function OzonProductCard({ task, onInspect, onCopyDraft, onSubmitDraft }: Props) {
+export default function OzonProductCard({ task, onInspect, onCopyDraft }: Props) {
   const [imageFailed, setImageFailed] = useState(false);
-  const [submitting, setSubmitting] = useState(false);
   const statusGroup = statusGroupOf(task.status);
   const title = task.title || text(firstRow(task).product_title) || text(firstItem(task).name) || task.offerId || '未命名商品';
 
@@ -110,16 +108,9 @@ export default function OzonProductCard({ task, onInspect, onCopyDraft, onSubmit
         <div className="ozon-product-card-actions">
           <button type="button" className="ozon-product-card-btn ozon-product-card-btn--inspect"
             onClick={(event) => { event.stopPropagation(); onInspect(task); }}>
-            查看草稿
+            {task.status === 'draft_ready' ? '编辑并提交' : '查看详情'}
           </button>
-          {task.status === 'draft_ready' && onSubmitDraft && (
-            <button type="button" className="ozon-product-card-btn ozon-product-card-btn--submit"
-              disabled={submitting}
-              onClick={(event) => { event.stopPropagation(); setSubmitting(true); onSubmitDraft(task); }}>
-              {submitting ? '提交中...' : '提交 Ozon'}
-            </button>
-          )}
-          {task.draft && onCopyDraft && !(task.status === 'draft_ready' && onSubmitDraft) && (
+          {task.draft && onCopyDraft && (
             <button type="button" className="ozon-product-card-btn ozon-product-card-btn--copy"
               onClick={(event) => { event.stopPropagation(); onCopyDraft(task); }}>
               复制 Payload

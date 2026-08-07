@@ -23,6 +23,7 @@ import {
   collectUnsupportedRequiredMediaAttributes,
   CONTROLLED_ATTR_IDS,
   createDraftForm,
+  createImageManagerSession,
   filterCategoryAttributesForMoreAttrs,
   firstItemOf,
   intForPayload,
@@ -38,6 +39,7 @@ import {
   type DictionaryValueIds,
   type DraftBuildResult,
   type DraftForm,
+  type ImageManagerSession,
   type VariantRowView,
 } from './ozonEditorUtils';
 import OzonEditorNav, { type EditorSectionId } from './OzonEditorNav';
@@ -520,13 +522,6 @@ function isSelectableCategoryNode(node: CategoryTreeViewNode): boolean {
   return node.selectable;
 }
 
-type ImageManagerSession = {
-  session: number;
-  itemIndex: number;
-  single: boolean;
-  images: string[];
-};
-
 export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onClose, onToast }: {
   task: OzonListingTask;
   onTaskUpdate?: (key: string, patch: OzonListingTaskPatch) => void;
@@ -764,7 +759,7 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onCl
   }
 
   async function fillCategoryAttributesByAi(forceFresh = false) {
-    if (attributeAiFilling) return;
+    if (submitting || attributeAiFilling) return;
     if (attributeLoadState !== 'ready') {
       setMessage(attributeLoadState === 'error' ? 'Ozon 类目属性加载失败，无法执行 AI 补全。' : '类目属性尚未加载完成，无法执行 AI 补全。');
       return;
@@ -1027,8 +1022,12 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onCl
   };
 
   const richContentInvalid = text(form.richContent).trim() !== '' && !normalizeRichContentJson(form.richContent).ok;
-  const customParsed = parseCustomAttributesDetailed(form.customAttributes, moreCategoryAttributes);
+  // Full category attribute set, not the filtered more-attrs list: a custom
+  // line matching ANY current-category attribute id (variant-dimension,
+  // optional-media included) must surface as a conflict.
+  const customParsed = parseCustomAttributesDetailed(form.customAttributes, categoryAttributes);
   const unsupportedRequiredMedia = collectUnsupportedRequiredMediaAttributes(moreCategoryAttributes);
+  const unsupportedMediaIds = new Set(unsupportedRequiredMedia.map((attr) => attr.id));
 
   const variantTable = useMemo(
     () => buildVariantTableView(task, buildResult?.draft || task.draft, firstItem, variantImageEdits),
@@ -1060,15 +1059,24 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onCl
   }
 
   function applyCategory(entry: OzonCategoryEntry) {
+    // Synchronous invalidation: the moment the user confirms a new category,
+    // any previous validation result and the old category's metadata are
+    // dead — never wait for the effect to run.
     setValidationState('idle');
-    setAttemptedAttributes(false);
+    setAttributeLoadState('loading');
     setCategoryAttributes([]);
     setShowMoreAttributes(false);
+    setAttemptedAttributes(false);
     setAttributesMessage('正在加载类目特征...');
+    const nextDescriptionId = categoryDescriptionId(entry);
+    const nextTypeId = categoryTypeId(entry);
+    // Claim the category key BEFORE the form update so a still-in-flight
+    // effect for the old category cannot overwrite the new key via cleanup.
+    categoryKeyRef.current = `${nextDescriptionId}:${nextTypeId}`;
     setForm((prev) => ({
       ...prev,
-      descriptionCategoryId: String(categoryDescriptionId(entry)),
-      typeId: String(categoryTypeId(entry)),
+      descriptionCategoryId: String(nextDescriptionId),
+      typeId: String(nextTypeId),
       categoryPath: entry.path || entry.keyword || '',
     }));
     setMessage('已选择 Ozon 类目，正在加载该类目的特征。');
@@ -1107,7 +1115,7 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onCl
     setActiveSection(id);
   }
 
-  function applyDraft(showToast = true): DraftBuildResult | null {
+  function buildCurrentDraft(): DraftBuildResult | null {
     if (attributeLoadState !== 'ready') {
       setValidationState('invalid');
       setMessage(attributeLoadState === 'error'
@@ -1115,6 +1123,7 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onCl
         : '类目属性尚未加载完成，请稍后再保存或提交。');
       return null;
     }
+    // Pure build: no onTaskUpdate / lastSavedAt / toast side effects.
     const result = buildDraft(
       task,
       form,
@@ -1129,7 +1138,10 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onCl
       setMessage('当前任务还没有可编辑的 Ozon 草稿。');
       return null;
     }
+    return result;
+  }
 
+  function persistDraft(result: DraftBuildResult, showToast = true): void {
     const patch: OzonListingTaskPatch = {
       draft: result.draft,
       title: text(result.firstItem.name) || task.title,
@@ -1146,18 +1158,15 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onCl
     setLastSavedAt(new Date().toLocaleTimeString());
     if (showToast) onToast?.(result.missing.length ? '已保存，仍有必填项待补充' : '已保存 Ozon 草稿');
     setMessage(result.missing.length ? `仍需补充：${formatMissingFields(result.missing)}` : '已保存，payload 已同步更新。');
-    return result;
   }
 
   function handleSave() {
-    if (attributeLoadState !== 'ready') {
-      setValidationState('invalid');
-      setMessage(attributeLoadState === 'error'
-        ? 'Ozon 类目属性加载失败，请点击"重新加载特征"后再保存或提交。'
-        : '类目属性尚未加载完成，请稍后再保存或提交。');
-      return;
-    }
-    const blockers = collectDraftBlockers(form, moreCategoryAttributes);
+    if (submitting) return;
+    const result = buildCurrentDraft();
+    if (!result) return;
+    // Full category attribute set (not the filtered more-attrs list):
+    // conflicts with variant-dimension/optional-media attrs must block save.
+    const blockers = collectDraftBlockers(form, categoryAttributes);
     if (blockers.length) {
       setValidationState('invalid');
       const detail = blockers.join('；');
@@ -1165,10 +1174,20 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onCl
       onToast?.(`无法保存：${detail}`);
       return;
     }
-    applyDraft(true);
+    persistDraft(result, true);
   }
 
   function reloadAttributes() {
+    if (submitting) return;
+    // Synchronous invalidation: a reload invalidates the old validation
+    // result immediately — the user must re-validate against the new
+    // metadata before the submit button can light up again.
+    setValidationState('idle');
+    setAttributeLoadState('loading');
+    setCategoryAttributes([]);
+    setShowMoreAttributes(false);
+    setAttemptedAttributes(false);
+    setAttributesMessage('正在重新加载类目特征...');
     setAttributeReloadKey((prev) => prev + 1);
   }
 
@@ -1176,7 +1195,8 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onCl
     setAttemptedProduct(true);
     setAttemptedAttributes(true);
     setValidationState('validating');
-    const result = applyDraft(false);
+    // Validate must never persist: no onTaskUpdate, no lastSavedAt update.
+    const result = buildCurrentDraft();
     if (!result) {
       setValidationState('invalid');
       return;
@@ -1190,18 +1210,24 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onCl
   }
 
   async function submitDraft() {
+    if (submitting) return;
     setAttemptedProduct(true);
     setAttemptedAttributes(true);
-    const result = applyDraft(false);
+    const result = buildCurrentDraft();
     if (!result) return;
     if (result.missing.length) {
       setValidationState('invalid');
       setMessage(`提交前还需要补充：${formatMissingFields(result.missing)}`);
       return;
     }
-    if (!window.confirm('确认提交当前 Ozon 草稿？提交前请确认店铺设置已开启真实提交。')) return;
+    if (!window.confirm('确认提交当前 Ozon 草稿？提交前请确认店铺设置已开启真实提交。')) {
+      // Cancel: nothing was persisted, nothing was submitted.
+      return;
+    }
 
     setSubmitting(true);
+    // Only after explicit confirmation does the freshly built draft become
+    // the task's persisted state.
     onTaskUpdate?.(task.key, {
       draft: result.draft,
       status: 'import_pending',
@@ -1240,29 +1266,11 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onCl
     }
   }
 
-  function fullItemImages(item: Record<string, unknown>): string[] {
-    const images: string[] = [];
-    const primary = normalizeImageUrl(text(item.primary_image));
-    if (primary) images.push(primary);
-    for (const value of Array.isArray(item.images) ? item.images : []) {
-      const url = normalizeImageUrl(text(value));
-      if (url && !images.includes(url)) images.push(url);
-    }
-    return images.slice(0, 15);
-  }
-
   function openImageManager(row: VariantRowView) {
     const single = variantRowsOfDraft.length === 0;
-    const item = single
-      ? objectOf(undefined)
-      : objectOf((buildResult?.draft?.items || task.draft?.items || [])[row.itemIndex]);
-    // capture the images at open time: the session holds the source so the
-    // manager always shows exactly what was opened, even if the draft is
-    // rebuilt underneath (unified source for both managers)
-    const images = single
-      ? lineList(form.images)
-      : variantImageEdits[String(row.itemIndex)] || fullItemImages(item);
-    setImageManager({ session: Date.now(), itemIndex: row.itemIndex, single, images });
+    // What the user sees in the table row is exactly what the manager edits:
+    // row.images is the canonical source (edits → row image → item images).
+    setImageManager(createImageManagerSession(row, single));
   }
 
   function imageManagerImages(): string[] {
@@ -1519,6 +1527,28 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onCl
                         <label className="ozon-attr-label ozon-other-attr-label">
                           {attr.name}{attr.isRequired ? <span className="req">*</span> : null}
                         </label>
+                        {unsupportedMediaIds.has(attr.id) ? (
+                          <>
+                            <div className="ozon-attr-control ozon-other-attr-control">
+                              <div
+                                style={{
+                                  border: '1px dashed #f59e0b',
+                                  background: '#fffbeb',
+                                  color: '#b45309',
+                                  borderRadius: 8,
+                                  padding: '8px 10px',
+                                  fontSize: 12,
+                                  lineHeight: 1.5,
+                                  minHeight: 36,
+                                }}
+                              >
+                                当前版本暂不支持填写
+                              </div>
+                            </div>
+                            <small className="ozon-attr-error-text ozon-other-attr-error">该类目要求该媒体属性，当前编辑器暂不支持，请勿提交</small>
+                          </>
+                        ) : (
+                        <>
                         <div className="ozon-attr-control ozon-other-attr-control">
                           {attr.dictionaryId ? (
                             <DictionaryAttributeField
@@ -1556,6 +1586,8 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onCl
                         </div>
                         {attemptedAttributes && attr.isRequired && !text(dynamicValues[String(attr.id)]) && (
                           <small className="ozon-attr-error-text ozon-other-attr-error">该类目必填属性不能为空</small>
+                        )}
+                        </>
                         )}
                       </div>
                     ))}

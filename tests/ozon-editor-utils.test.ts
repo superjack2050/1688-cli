@@ -17,19 +17,23 @@ import {
   collectRequiredExpandedIds,
   collectUnsupportedRequiredMediaAttributes,
   collectVariantViewMissing,
+  createImageManagerSession,
   deriveEditorActions,
   filterCategoryAttributesForMoreAttrs,
   filterTreeNodes,
   isMediaAttributeName,
   isValidPositivePrice,
   lineList,
+  measurementIntegerForPayload,
   normalizeImageUrl,
   normalizeRichContentJson,
   parseCustomAttributes,
   parseCustomAttributesDetailed,
+  parseStrictPositiveMeasurement,
   positiveInteger,
   pruneDynamicValuesForCategory,
   resolveVariantItemIndex,
+  validateDraftForEditor,
 } from '../apps/desktop/renderer/src/components/Ozon/ozonEditorUtils';
 import type { OzonListingTask } from '../apps/desktop/renderer/src/components/Results/ozonListing/types';
 import type { OzonDraft } from '../apps/desktop/renderer/src/services/api';
@@ -212,7 +216,7 @@ describe('ozon editor utils', () => {
           attr(ATTR_RICH_CONTENT, '{"old":true}'),
         ],
       });
-      const attrs = buildAttributes(base, form(), {}, [], {});
+      const attrs = buildAttributes(base, form(), {}, [{ id: 2001 }], {});
       const ids = attrs.map((item) => Number(item.id));
       expect(ids).toContain(ATTR_BRAND);
       expect(ids).toContain(ATTR_MODEL);
@@ -245,6 +249,13 @@ describe('ozon editor utils', () => {
       const attrs = buildAttributes(base, form(), {}, [{ id: 2002 }], []);
       const ids = attrs.map((item) => Number(item.id));
       expect(ids).toContain(2002);
+      expect(ids).not.toContain(2001);
+    });
+
+    it('drops stale preserved attributes when metadata is ready but the new category does not declare them', () => {
+      const base = baseItem({ attributes: [attr(2001, 'старое значение')] });
+      const attrs = buildAttributes(base, form(), {}, [], [], { attributeMetadataReady: true });
+      const ids = attrs.map((item) => Number(item.id));
       expect(ids).not.toContain(2001);
     });
 
@@ -589,6 +600,166 @@ describe('ozon editor utils', () => {
       expect(collectProductPageMissing(form({ price: '' }))).toContain('价格');
       expect(collectProductPageMissing(form({ price: '0' }))).toContain('价格');
       expect(collectProductPageMissing(form({ price: '12' }))).not.toContain('价格');
+    });
+  });
+
+  describe('strict measurements (P1-08)', () => {
+    it('accepts only plain positive decimal numbers', () => {
+      expect(parseStrictPositiveMeasurement('1')).toBe(1);
+      expect(parseStrictPositiveMeasurement('12.5')).toBe(12.5);
+      expect(parseStrictPositiveMeasurement('0.5')).toBe(0.5);
+      expect(parseStrictPositiveMeasurement(' 12 ')).toBe(12);
+      for (const bad of ['', '0', '-1', '-500', 'abc', 'abc10', '10mm', '1 0', '12,5', 'Infinity', 'NaN', '1e3']) {
+        expect(parseStrictPositiveMeasurement(bad)).toBeNull();
+      }
+    });
+
+    it('maps valid inputs to payload integers with rounding, invalid to 0', () => {
+      expect(measurementIntegerForPayload('12.5')).toBe(13);
+      expect(measurementIntegerForPayload('0.4')).toBe(1);
+      expect(measurementIntegerForPayload('1')).toBe(1);
+      expect(measurementIntegerForPayload('100')).toBe(100);
+      for (const bad of ['', '0', '-1', '-500', 'abc', 'abc10', '10mm', '12,5', '1e3']) {
+        expect(measurementIntegerForPayload(bad)).toBe(0);
+      }
+    });
+
+    it('payload builders reject non-positive and non-numeric measurements', () => {
+      const task = makeTask([baseItem()]);
+      const result = buildDraft(task, form({ depth: 'abc', width: '-1', height: '12,5', weight: '0' }), {}, [], {}, [], {});
+      expect(result).not.toBeNull();
+      expect(result!.missing).toContain('包装长度');
+      expect(result!.missing).toContain('包装宽度');
+      expect(result!.missing).toContain('包装高度');
+      expect(result!.missing).toContain('含包装重量');
+      const item = result!.draft.items[0];
+      expect(item.depth).toBe(0);
+      expect(item.width).toBe(0);
+      expect(item.height).toBe(0);
+      expect(item.weight).toBe(0);
+    });
+  });
+
+  describe('custom attribute malformed line (P1-06)', () => {
+    it('reports lines without an equals sign as format errors', () => {
+      const parsed = parseCustomAttributesDetailed('2001=red\nnot-a-line\n  2002 = x  \n=empty-key', []);
+      expect(parsed.errors).toContain('自定义属性行格式无效：not-a-line');
+      expect(parsed.errors).toContain('自定义属性行格式无效：=empty-key');
+      expect(parsed.attributes.map((attr) => Number(attr.id))).toEqual([2001, 2002]);
+    });
+
+    it('ignores blank lines entirely', () => {
+      const parsed = parseCustomAttributesDetailed('\n   \n2001=red\n', []);
+      expect(parsed.errors).toEqual([]);
+      expect(parsed.attributes.map((attr) => Number(attr.id))).toEqual([2001]);
+    });
+  });
+
+  describe('validation routing and payloadOnly (P2-02)', () => {
+    it('routes first-item missing title to main and SKU-level problems to variants', () => {
+      const task = makeTask(
+        [
+          baseItem({ name: '', primary_image: '', price: '0' }),
+          baseItem({ item_index: 1, name: 'SKU 2', primary_image: '', price: '5' }),
+        ],
+        { confirmed: true, dimensions: [], variants: [] },
+      );
+      const breakdown = validateDraftForEditor(form({ name: '', price: '0' }), task.draft, task.draft.items, {}, [], [], '');
+      expect(breakdown.main).toContain('俄语标题');
+      expect(breakdown.variants).toContain('SKU 2 主图');
+      expect(breakdown.main).toContain('价格');
+      expect(breakdown.variants.filter((item) => item === '主图')).toHaveLength(1);
+      expect(breakdown.payloadOnly).toEqual([]);
+      expect(new Set(breakdown.all).size).toBe(breakdown.all.length);
+    });
+
+    it('keeps payload-only invariants that no section reports', () => {
+      const task = makeTask([baseItem({ price: '0' })]);
+      const breakdown = validateDraftForEditor(form(), task.draft, task.draft.items, {}, [], [], '');
+      expect(breakdown.main).not.toContain('价格');
+      expect(breakdown.variants).not.toContain('价格');
+      expect(breakdown.payloadOnly).toEqual(['价格']);
+    });
+  });
+
+  describe('image manager session (P1-01)', () => {
+    it('snapshots exactly the row images for single and variant rows', () => {
+      const single = { itemIndex: 0, images: ['https://example.com/a.jpg'] } as Parameters<typeof createImageManagerSession>[0];
+      const one = createImageManagerSession(single, true, 42);
+      expect(one.session).toBe(42);
+      expect(one.single).toBe(true);
+      expect(one.images).toEqual(['https://example.com/a.jpg']);
+      expect(one.images).not.toBe(single.images);
+
+      const variant = {
+        itemIndex: 1,
+        images: ['https://example.com/1.jpg', 'https://example.com/2.jpg'],
+      } as Parameters<typeof createImageManagerSession>[0];
+      const two = createImageManagerSession(variant, false);
+      expect(two.single).toBe(false);
+      expect(two.images).toEqual(['https://example.com/1.jpg', 'https://example.com/2.jpg']);
+      expect(two.images).not.toBe(variant.images);
+    });
+
+    it('buildVariantTableView row.image wins over primary_image and images equal the session source', () => {
+      const task = makeTask(
+        [
+          baseItem({ name: 'SKU A', primary_image: 'https://example.com/generic.jpg' }),
+          baseItem({ item_index: 1, name: 'SKU B', primary_image: 'https://example.com/2.jpg' }),
+        ],
+        {
+          confirmed: true,
+          dimensions: [{ id: 1, name: 'Цвет', attribute_id: 1001, values: [] }],
+          variants: [
+            { offer_id: 'offer-1', item_index: 0, source_sku_name: 'SKU A', values: {}, image: 'https://example.com/sku-red.jpg' },
+            { offer_id: 'offer-2', item_index: 1, source_sku_name: 'SKU B', values: {} },
+          ],
+        },
+      );
+      const { rows } = buildVariantTableView(task, task.draft, task.draft!.items[0]);
+      expect(rows[0].images[0]).toBe('https://example.com/sku-red.jpg');
+      expect(rows[0].images).not.toContain('https://example.com/generic.jpg');
+      expect(rows[1].images[0]).toBe('https://example.com/2.jpg');
+      const session = createImageManagerSession(rows[0], false);
+      expect(session.images).toEqual(rows[0].images);
+      expect(session.images).toContain('https://example.com/sku-red.jpg');
+    });
+  });
+
+  describe('deriveEditorActions gating matrix (P1-04)', () => {
+    const ready = { attributeLoadState: 'ready', validationState: 'idle', submitting: false };
+    it('ready + valid + hasDraft unlocks everything', () => {
+      const actions = deriveEditorActions({ ...ready, validationState: 'valid', hasDraft: true });
+      expect(actions).toEqual({ canSave: true, canValidate: true, canSubmit: true, canAiFill: true });
+    });
+
+    it('submit stays locked until validation passes', () => {
+      expect(deriveEditorActions({ ...ready, hasDraft: true }).canSubmit).toBe(false);
+      expect(deriveEditorActions({ ...ready, hasDraft: false }).canSubmit).toBe(false);
+      expect(deriveEditorActions({ ...ready, validationState: 'valid', hasDraft: false }).canSubmit).toBe(false);
+    });
+
+    it('save needs a draft to exist', () => {
+      expect(deriveEditorActions({ ...ready, hasDraft: false }).canSave).toBe(false);
+    });
+
+    it('attribute loading/error states block all actions', () => {
+      for (const state of ['idle', 'loading', 'error']) {
+        const actions = deriveEditorActions({ attributeLoadState: state, validationState: 'valid', submitting: false, hasDraft: true });
+        expect(actions).toEqual({ canSave: false, canValidate: false, canSubmit: false, canAiFill: false });
+      }
+    });
+
+    it('submitting disables everything including AI fill', () => {
+      const actions = deriveEditorActions({ ...ready, validationState: 'valid', hasDraft: true, submitting: true });
+      expect(actions).toEqual({ canSave: false, canValidate: false, canSubmit: false, canAiFill: false });
+    });
+
+    it('AI fill in progress keeps submit possible but blocks the AI button', () => {
+      const actions = deriveEditorActions({ ...ready, validationState: 'valid', hasDraft: true, aiFilling: true });
+      expect(actions.canAiFill).toBe(false);
+      expect(actions.canSubmit).toBe(true);
+      expect(actions.canSave).toBe(true);
     });
   });
 });

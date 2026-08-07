@@ -56,6 +56,8 @@ export type DraftValidationBreakdown = {
   attributes: string[];
   variants: string[];
   payload: string[];
+  /** payload errors not locatable in any of the three UI sections — must be empty */
+  payloadOnly: string[];
   all: string[];
 };
 
@@ -70,21 +72,23 @@ export type EditorActions = {
 
 /**
  * Pure gating rule shared by the bottom bar and the editor handlers.
- * Only `ready` category metadata unlocks save/validate/submit/AI fill.
+ * Only `ready` category metadata unlocks save/validate/submit/AI fill;
+ * submitting disables every dangerous action, including AI fill.
  */
 export function deriveEditorActions(input: {
   attributeLoadState: AttributeLoadState;
   validationState: 'idle' | 'validating' | 'valid' | 'invalid';
   submitting: boolean;
+  aiFilling?: boolean;
   hasDraft: boolean;
 }): EditorActions {
   const attributeReady = input.attributeLoadState === 'ready';
   const notBusy = !input.submitting;
   return {
-    canSave: attributeReady && notBusy,
-    canValidate: attributeReady && notBusy,
-    canSubmit: attributeReady && input.validationState === 'valid' && notBusy && input.hasDraft,
-    canAiFill: attributeReady && notBusy,
+    canSave: attributeReady && notBusy && input.hasDraft,
+    canValidate: attributeReady && notBusy && input.hasDraft,
+    canSubmit: attributeReady && notBusy && input.hasDraft && input.validationState === 'valid',
+    canAiFill: attributeReady && notBusy && !input.aiFilling,
   };
 }
 
@@ -98,6 +102,21 @@ export type VariantRowView = {
   stock: string;
   values: Record<string, unknown>;
 };
+
+export type ImageManagerSession = {
+  session: number;
+  itemIndex: number;
+  single: boolean;
+  images: string[];
+};
+
+/**
+ * The ImageManager must edit exactly what the table row shows. The session
+ * snapshots row.images at open time so both views share one source.
+ */
+export function createImageManagerSession(row: VariantRowView, single: boolean, session = Date.now()): ImageManagerSession {
+  return { session, itemIndex: row.itemIndex, single, images: [...row.images] };
+}
 
 export function objectOf(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
@@ -119,6 +138,31 @@ export function positiveInteger(value: string): number {
   if (!match) return 0;
   const number = Number(match[0]);
   return Number.isFinite(number) && number > 0 ? Math.max(1, Math.round(number)) : 0;
+}
+
+/**
+ * Strict user-input measurement parser. Rejects anything that is not a plain
+ * positive decimal number — `-500`, `abc10`, `10mm` and `0` are all invalid.
+ * Do NOT use `positiveInteger` for editor form values: its regex extracts
+ * digits from garbage, silently turning -500 into 500.
+ */
+export function parseStrictPositiveMeasurement(value: string): number | null {
+  const raw = String(value ?? '').trim();
+  if (!/^\d+(?:\.\d+)?$/.test(raw)) return null;
+  const number = Number(raw);
+  if (!Number.isFinite(number) || number <= 0) return null;
+  return number;
+}
+
+/**
+ * Strict measurement for the payload. Invalid input yields 0 (validation
+ * blocks save/submit anyway), valid decimals are rounded up to a whole
+ * millimeter/gram. 12.5 → 13.
+ */
+export function measurementIntegerForPayload(value: string): number {
+  const parsed = parseStrictPositiveMeasurement(value);
+  if (parsed === null) return 0;
+  return Math.max(1, Math.round(parsed));
 }
 
 export function priceForPayload(value: string, fallback = '1'): string {
@@ -323,11 +367,16 @@ export function parseCustomAttributesDetailed(
   const categoryIds = new Set(categoryAttributes.map((attr) => attr.id));
 
   for (const line of String(value || '').split(/\r?\n/)) {
-    if (!line.includes('=')) continue;
-    const [rawId, ...valueParts] = line.split('=');
+    const normalizedLine = line.trim();
+    if (!normalizedLine) continue;
+    if (!normalizedLine.includes('=')) {
+      errors.push(`自定义属性行格式无效：${normalizedLine}`);
+      continue;
+    }
+    const [rawId, ...valueParts] = normalizedLine.split('=');
     const attrId = Number(rawId.trim());
     if (!Number.isFinite(attrId) || attrId <= 0) {
-      errors.push(`自定义属性行格式无效：${line}`);
+      errors.push(`自定义属性行格式无效：${normalizedLine}`);
       continue;
     }
     const id = Math.round(attrId);
@@ -398,13 +447,19 @@ export function buildDynamicAttributes(
  *   conflicting with controlled/category attributes are excluded here and
  *   surfaced as validation errors instead.
  */
+export type BuildAttributesOptions = {
+  attributeMetadataReady?: boolean;
+};
+
 export function buildAttributes(
   baseItem: Record<string, unknown>,
   form: DraftForm,
   dynamicValues: Record<string, string>,
   categoryAttributes: Array<{ id: number }>,
   dictionaryValueIds: DictionaryValueIds,
+  options: BuildAttributesOptions = {},
 ): Record<string, unknown>[] {
+  const attributeMetadataReady = options.attributeMetadataReady !== false;
   const custom = parseCustomAttributesDetailed(form.customAttributes, categoryAttributes);
   const customAttrs = custom.attributes;
   const dynamicAttrs = buildDynamicAttributes(dynamicValues, categoryAttributes, dictionaryValueIds);
@@ -418,19 +473,24 @@ export function buildAttributes(
       const attrId = Number(attr.id);
       if (attrId <= 0 || CONTROLLED_ATTR_IDS.has(attrId)) return false;
       if (customIds.has(attrId) || dynamicIds.has(attrId)) return false;
-      if (categoryIds.size > 0 && !categoryIds.has(attrId)) return false;
-      return true;
+      // Unmanaged attributes are only carried over when the current
+      // category metadata actually declares them. Ready-but-empty metadata
+      // (attributes=[]) must NOT preserve stale attributes from a previous
+      // category; unknown metadata must not leak them into the draft either.
+      if (!attributeMetadataReady) return false;
+      return categoryIds.has(attrId);
     });
 
   const productNameAttr = categoryIds.has(ATTR_PRODUCT_NAME)
     ? buildAttribute(ATTR_PRODUCT_NAME, form.name)
     : null;
   const richContent = normalizeRichContentJson(form.richContent);
+  const weight = measurementIntegerForPayload(form.weight);
   const controlled = [
     productNameAttr,
     buildAttribute(ATTR_BRAND, form.brand, dictionaryValueIds[String(ATTR_BRAND)]),
     buildAttribute(ATTR_MODEL, form.model),
-    buildAttribute(ATTR_WEIGHT, String(positiveInteger(form.weight))),
+    buildAttribute(ATTR_WEIGHT, String(weight)),
     buildAttribute(ATTR_DESCRIPTION, form.description),
     buildAttribute(ATTR_TAGS, normalizeTagsForPayload(form.tags)),
     buildSingleValueAttribute(ATTR_RICH_CONTENT, richContent.ok ? richContent.value : form.richContent.trim()),
@@ -441,13 +501,14 @@ export function buildAttributes(
 
 export function collectProductPageMissing(form: DraftForm): string[] {
   const missing: string[] = [];
+  if (!form.name.trim()) missing.push('俄语标题');
   if (!form.categoryPath.trim() || !intForPayload(form.descriptionCategoryId) || !intForPayload(form.typeId)) missing.push('类目和类型');
   if (!form.offerId.trim()) missing.push('货号');
   if (!isValidPositivePrice(form.price)) missing.push('价格');
-  if (!positiveInteger(form.depth)) missing.push('包装长度');
-  if (!positiveInteger(form.width)) missing.push('包装宽度');
-  if (!positiveInteger(form.height)) missing.push('包装高度');
-  if (!positiveInteger(form.weight)) missing.push('含包装重量');
+  if (parseStrictPositiveMeasurement(form.depth) === null) missing.push('包装长度');
+  if (parseStrictPositiveMeasurement(form.width) === null) missing.push('包装宽度');
+  if (parseStrictPositiveMeasurement(form.height) === null) missing.push('包装高度');
+  if (parseStrictPositiveMeasurement(form.weight) === null) missing.push('含包装重量');
   return missing;
 }
 
@@ -523,30 +584,37 @@ export function collectAttributeMissing(
   return unique(missing);
 }
 
+/**
+ * Defensive payload-level validator. Uses the SAME canonical labels as the
+ * UI sections (main/variants) so `validation.all` never counts an error
+ * twice and every payload error is locatable in one of the three sections.
+ */
 export function collectPayloadMissing(
   draft: OzonDraft,
   items: Record<string, unknown>[],
   attributeMissing: string[],
 ): string[] {
   const missing = new Set<string>(attributeMissing);
-  for (const item of items) {
+  items.forEach((item, index) => {
     if (!text(item.name)) missing.add('俄语标题');
-    if (!text(item.primary_image)) missing.add('主图');
-    if (!Number(item.description_category_id) || !Number(item.type_id)) missing.add('Ozon 类目');
-    if (!Number(item.price)) missing.add('价格');
-  }
+    if (!text(item.primary_image)) missing.add(index === 0 ? '主图' : `SKU ${index + 1} 主图`);
+    if (!Number(item.description_category_id) || !Number(item.type_id)) missing.add('类目和类型');
+    if (!Number(item.price)) missing.add(index === 0 ? '价格' : `SKU ${index + 1} 价格`);
+  });
   return Array.from(missing);
 }
 
 /**
- * Variant-specific problems: per-item issues beyond the first item plus an
- * unconfirmed variant dimension mapping for multi-SKU drafts.
+ * Variant-specific problems with canonical labels: the first SKU's primary
+ * image is simply '主图', every following SKU gets a labeled 'SKU N ...'
+ * entry, plus an unconfirmed variant dimension mapping for multi-SKU drafts.
  */
 export function collectVariantViewMissing(
   items: Record<string, unknown>[],
   draft?: OzonDraft,
 ): string[] {
   const missing: string[] = [];
+  if (items.length > 0 && !text(items[0].primary_image)) missing.push('主图');
   for (let index = 1; index < items.length; index++) {
     const item = items[index];
     const label = `SKU ${index + 1}`;
@@ -612,9 +680,11 @@ export function validateDraftForEditor(
   ]);
   const variants = collectVariantViewMissing(items, draft);
   const payload = collectPayloadMissing(draft, items, []);
+  const sectionUnion = unique([...main, ...attributes, ...variants]);
+  const payloadOnly = unique(payload.filter((item) => !sectionUnion.includes(item)));
   const all = unique([...main, ...attributes, ...variants, ...payload]);
 
-  return { main, attributes, variants, payload, all };
+  return { main, attributes, variants, payload, payloadOnly, all };
 }
 
 export function variantOf(draft?: OzonDraft): Record<string, unknown> {
@@ -785,7 +855,9 @@ export function buildDraft(
   const images = lineList(form.images).map(normalizeImageUrl).filter(Boolean).slice(0, 15);
   const descriptionCategoryId = intForPayload(form.descriptionCategoryId);
   const typeId = intForPayload(form.typeId);
-  const attributes = buildAttributes(baseFirst, form, dynamicValues, categoryAttributes, dictionaryValueIds);
+  const attributes = buildAttributes(baseFirst, form, dynamicValues, categoryAttributes, dictionaryValueIds, {
+    attributeMetadataReady,
+  });
 
   const firstItem: Record<string, unknown> = {
     ...baseFirst,
@@ -802,11 +874,11 @@ export function buildDraft(
     images,
     primary_image: images[0] || '',
     dimension_unit: form.dimensionUnit || 'mm',
-    depth: positiveInteger(form.depth),
-    width: positiveInteger(form.width),
-    height: positiveInteger(form.height),
+    depth: measurementIntegerForPayload(form.depth),
+    width: measurementIntegerForPayload(form.width),
+    height: measurementIntegerForPayload(form.height),
     weight_unit: form.weightUnit || 'g',
-    weight: positiveInteger(form.weight),
+    weight: measurementIntegerForPayload(form.weight),
     attributes,
     complex_attributes: Array.isArray(baseFirst.complex_attributes) ? baseFirst.complex_attributes : [],
     _category_path: form.categoryPath.trim(),

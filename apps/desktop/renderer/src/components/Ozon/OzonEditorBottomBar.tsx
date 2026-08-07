@@ -1,5 +1,5 @@
 import React from 'react';
-import type { AttributeLoadState } from './ozonEditorUtils';
+import { deriveEditorActions, type AttributeLoadState } from './ozonEditorUtils';
 
 type ValidationState = 'idle' | 'validating' | 'valid' | 'invalid';
 
@@ -22,17 +22,15 @@ interface Props {
 export type { ValidationState };
 
 export default function OzonEditorBottomBar({
-  submitting, hasDraft, missingCount, validationState, lastSavedAt, aiFilling,
+  submitting, hasDraft, missingCount, validationState, lastSavedAt, aiFilling = false,
   attributeLoadState = 'idle', onSave, onValidate, onSubmit, onBack, onAiFillAttributes, onRetryAttributes,
 }: Props) {
-  const attributesReady = attributeLoadState === 'ready';
+  // Single source of truth for all gating — the same rule the editor
+  // handlers and tests use.
+  const actions = deriveEditorActions({ attributeLoadState, validationState, submitting, aiFilling, hasDraft });
   const attributesError = attributeLoadState === 'error';
   const attributesLoading = attributeLoadState === 'loading';
-  const busy = submitting;
-  const canSave = attributesReady && !busy && hasDraft;
-  const canValidate = canSave;
-  const canSubmit = canSave && validationState === 'valid';
-  const canAiFill = attributesReady && !aiFilling;
+  const attributesReady = attributeLoadState === 'ready';
   const statusText =
     validationState === 'valid' ? '校验通过，可以提交 Ozon'
     : validationState === 'invalid' ? `还有 ${missingCount} 个必填字段未完成`
@@ -51,7 +49,7 @@ export default function OzonEditorBottomBar({
             type="button"
             className="ozon-ai-edit-btn-gradient"
             onClick={onAiFillAttributes}
-            disabled={!canAiFill}
+            disabled={!actions.canAiFill}
           >
             {aiFilling ? 'AI 补全中...' : 'AI 补全属性'}
           </button>
@@ -69,19 +67,19 @@ export default function OzonEditorBottomBar({
         )}
         {lastSavedAt && <span className="ozon-ai-edit-saved-at">最近保存：{lastSavedAt}</span>}
         <button type="button" className="ozon-ai-edit-btn-plain" onClick={onBack}>取消并关闭</button>
-        <button type="button" className="ozon-ai-edit-btn-secondary" onClick={onSave} disabled={!canSave}>保存草稿</button>
+        <button type="button" className="ozon-ai-edit-btn-secondary" onClick={onSave} disabled={!actions.canSave}>保存草稿</button>
         <button
           type="button"
           className="ozon-ai-edit-btn-secondary"
           onClick={onValidate}
-          disabled={!canValidate || validationState === 'validating'}
+          disabled={!actions.canValidate || validationState === 'validating'}
         >
           校验商品
         </button>
         <button
           type="button"
-          className={`ozon-ai-edit-btn-primary ${!canSubmit ? 'disabled' : ''}`}
-          disabled={!canSubmit}
+          className={`ozon-ai-edit-btn-primary ${!actions.canSubmit ? 'disabled' : ''}`}
+          disabled={!actions.canSubmit}
           onClick={onSubmit}
         >
           {submitting ? '提交中...' : '提交 Ozon'}
