@@ -18,10 +18,9 @@ import {
   ATTR_WEIGHT,
   buildDraft,
   buildVariantTableView,
-  collectAttributeMissing,
+  collectDraftBlockers,
   collectHiddenRequiredAttributes,
-  collectProductPageMissing,
-  collectVariantViewMissing,
+  collectUnsupportedRequiredMediaAttributes,
   CONTROLLED_ATTR_IDS,
   createDraftForm,
   filterCategoryAttributesForMoreAttrs,
@@ -29,9 +28,12 @@ import {
   intForPayload,
   lineList,
   normalizeImageUrl,
+  normalizeRichContentJson,
   objectOf,
+  parseCustomAttributesDetailed,
   pruneDynamicValuesForCategory,
   text,
+  type AttributeLoadState,
   type CategoryTreeViewNode,
   type DictionaryValueIds,
   type DraftBuildResult,
@@ -522,12 +524,14 @@ type ImageManagerSession = {
   session: number;
   itemIndex: number;
   single: boolean;
+  images: string[];
 };
 
-export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onToast }: {
+export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onClose, onToast }: {
   task: OzonListingTask;
   onTaskUpdate?: (key: string, patch: OzonListingTaskPatch) => void;
   onBackTo1688: () => void;
+  onClose: () => void;
   onToast?: (message: string) => void;
 }) {
   const [form, setForm] = useState<DraftForm>(() => createDraftForm(task));
@@ -537,7 +541,7 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onTo
   const [shopLabel, setShopLabel] = useState('Ozon 店铺：未检查');
   const [categoryQuery, setCategoryQuery] = useState('');
   const [categoryAttributes, setCategoryAttributes] = useState<OzonCategoryAttribute[]>([]);
-  const [attributesLoading, setAttributesLoading] = useState(false);
+  const [attributeLoadState, setAttributeLoadState] = useState<AttributeLoadState>('idle');
   const [attributesMessage, setAttributesMessage] = useState('尚未加载类目特征');
   const [attributeReloadKey, setAttributeReloadKey] = useState(0);
   const [dynamicValues, setDynamicValues] = useState<Record<string, string>>(() => attributeValuesOf(task));
@@ -760,7 +764,11 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onTo
   }
 
   async function fillCategoryAttributesByAi(forceFresh = false) {
-    if (attributeAiFilling || attributesLoading) return;
+    if (attributeAiFilling) return;
+    if (attributeLoadState !== 'ready') {
+      setMessage(attributeLoadState === 'error' ? 'Ozon 类目属性加载失败，无法执行 AI 补全。' : '类目属性尚未加载完成，无法执行 AI 补全。');
+      return;
+    }
     const attrs = moreCategoryAttributes;
     if (!attrs.length) return;
 
@@ -818,6 +826,8 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onTo
     setDictionaryValueIds(attributeDictionaryIdsOf(task));
     setDictionaryPayloadValues({});
     setCategoryAttributes([]);
+    setAttributeLoadState('idle');
+    setAttributesMessage('尚未加载类目特征');
     setMessage('');
     setShowMoreAttributes(false);
     setShowAdvanced(false);
@@ -887,9 +897,10 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onTo
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [brandAttribute?.dictionaryId, form.descriptionCategoryId, form.typeId]);
 
-  // Category attributes load with stale-state clearing + response race guard:
-  // the category key is captured per effect run and re-verified when the
-  // response arrives, so a slow A→B response can never overwrite a newer C.
+  // Category attributes load with a state machine (idle/loading/ready/error)
+  // plus a stale-state clearing + response race guard: the category key is
+  // captured per effect run and re-verified when the response arrives, so a
+  // slow A→B response can never overwrite a newer C.
   useEffect(() => {
     const descriptionCategoryId = intForPayload(form.descriptionCategoryId);
     const typeId = intForPayload(form.typeId);
@@ -898,13 +909,13 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onTo
 
     if (!descriptionCategoryId || !typeId) {
       setCategoryAttributes([]);
+      setAttributeLoadState('idle');
       setAttributesMessage('请选择 Ozon 类目和类型后加载特征。');
-      setAttributesLoading(false);
       return;
     }
 
     let alive = true;
-    setAttributesLoading(true);
+    setAttributeLoadState('loading');
     setCategoryAttributes([]);
     setAttributesMessage('正在加载类目特征...');
     setShowMoreAttributes(false);
@@ -918,16 +929,15 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onTo
         setDynamicValues((prev) => pruneDynamicValuesForCategory(prev, attrs));
         setDictionaryValueIds((prev) => pruneDictionaryIdsForCategory(prev, attrs));
         setDictionaryPayloadValues((prev) => prunePayloadValuesForCategory(prev, attrs));
+        setAttributeLoadState('ready');
         setAttributesMessage(`已加载 ${attrs.length} 项类目特征，其中必填 ${response.requiredCount} 项`);
       })
       .catch((error) => {
         if (!alive) return;
         if (categoryKeyRef.current !== categoryKey) return;
         setCategoryAttributes([]);
+        setAttributeLoadState('error');
         setAttributesMessage(error instanceof Error ? error.message : String(error));
-      })
-      .finally(() => {
-        if (alive) setAttributesLoading(false);
       });
 
     return () => { alive = false; };
@@ -992,28 +1002,33 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onTo
     return () => observer.disconnect();
   }, []);
 
-  const productMissing = useMemo(() => collectProductPageMissing(form), [form]);
-  const attributeMissing = useMemo(
-    () => collectAttributeMissing(form, dynamicValues, moreCategoryAttributes),
-    [moreCategoryAttributes, dynamicValues, form],
-  );
   const buildResult = useMemo(
-    () => buildDraft(task, form, dynamicValues, categoryAttributes, dictionaryValueIds, moreCategoryAttributes, variantImageEdits),
-    [categoryAttributes, dictionaryValueIds, dynamicValues, form, moreCategoryAttributes, task, variantImageEdits],
+    () => buildDraft(
+      task,
+      form,
+      dynamicValues,
+      categoryAttributes,
+      dictionaryValueIds,
+      moreCategoryAttributes,
+      variantImageEdits,
+      { attributeMetadataReady: attributeLoadState === 'ready', attributeMetadataMessage: attributesMessage },
+    ),
+    [attributeLoadState, attributesMessage, categoryAttributes, dictionaryValueIds, dynamicValues, form, moreCategoryAttributes, task, variantImageEdits],
   );
-  const missing = buildResult?.missing || task.missingFields || task.draft?.missing || [];
+  // single source of truth for what blocks save/validate/submit
+  const validation = buildResult?.validation;
+  const missing = validation?.all || buildResult?.missing || task.missingFields || task.draft?.missing || [];
   const firstItem = buildResult?.firstItem || firstItemOf(task);
-  const variantsMissing = useMemo(
-    () => collectVariantViewMissing(buildResult?.draft?.items || task.draft?.items || [], buildResult?.draft || task.draft),
-    [buildResult?.draft, task.draft],
-  );
-  const canSubmit = Boolean(buildResult?.draft) && missing.length === 0 && !submitting && !attributesLoading;
 
   const missingCounts = {
-    main: productMissing.length,
-    attributes: attributeMissing.length,
-    variants: variantsMissing.length,
+    main: validation?.main.length || 0,
+    attributes: validation?.attributes.length || 0,
+    variants: validation?.variants.length || 0,
   };
+
+  const richContentInvalid = text(form.richContent).trim() !== '' && !normalizeRichContentJson(form.richContent).ok;
+  const customParsed = parseCustomAttributesDetailed(form.customAttributes, moreCategoryAttributes);
+  const unsupportedRequiredMedia = collectUnsupportedRequiredMediaAttributes(moreCategoryAttributes);
 
   const variantTable = useMemo(
     () => buildVariantTableView(task, buildResult?.draft || task.draft, firstItem, variantImageEdits),
@@ -1022,20 +1037,24 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onTo
   const visibleVariantDims = variantTable.dims.filter((dim) => dim.distinguishes_variants === true);
 
   function markEdited() {
-    setValidationState((prev) => (prev === 'valid' ? 'idle' : prev));
+    if (submitting) return;
+    setValidationState('idle');
   }
 
   function updateField<K extends keyof DraftForm>(key: K, value: DraftForm[K]) {
+    if (submitting) return;
     markEdited();
     setForm((prev) => ({ ...prev, [key]: value }));
   }
 
   function updateDynamicValue(attrId: number, value: string) {
+    if (submitting) return;
     markEdited();
     setDynamicValues((prev) => ({ ...prev, [String(attrId)]: value }));
   }
 
   function updateDictionaryValueIds(attrId: number, values: Record<string, number>) {
+    if (submitting) return;
     markEdited();
     setDictionaryValueIds((prev) => ({ ...prev, [String(attrId)]: values }));
   }
@@ -1089,7 +1108,23 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onTo
   }
 
   function applyDraft(showToast = true): DraftBuildResult | null {
-    const result = buildDraft(task, form, dynamicValues, categoryAttributes, dictionaryValueIds, moreCategoryAttributes, variantImageEdits);
+    if (attributeLoadState !== 'ready') {
+      setValidationState('invalid');
+      setMessage(attributeLoadState === 'error'
+        ? 'Ozon 类目属性加载失败，请点击"重新加载特征"后再保存或提交。'
+        : '类目属性尚未加载完成，请稍后再保存或提交。');
+      return null;
+    }
+    const result = buildDraft(
+      task,
+      form,
+      dynamicValues,
+      categoryAttributes,
+      dictionaryValueIds,
+      moreCategoryAttributes,
+      variantImageEdits,
+      { attributeMetadataReady: true, attributeMetadataMessage: attributesMessage },
+    );
     if (!result) {
       setMessage('当前任务还没有可编辑的 Ozon 草稿。');
       return null;
@@ -1112,6 +1147,29 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onTo
     if (showToast) onToast?.(result.missing.length ? '已保存，仍有必填项待补充' : '已保存 Ozon 草稿');
     setMessage(result.missing.length ? `仍需补充：${formatMissingFields(result.missing)}` : '已保存，payload 已同步更新。');
     return result;
+  }
+
+  function handleSave() {
+    if (attributeLoadState !== 'ready') {
+      setValidationState('invalid');
+      setMessage(attributeLoadState === 'error'
+        ? 'Ozon 类目属性加载失败，请点击"重新加载特征"后再保存或提交。'
+        : '类目属性尚未加载完成，请稍后再保存或提交。');
+      return;
+    }
+    const blockers = collectDraftBlockers(form, moreCategoryAttributes);
+    if (blockers.length) {
+      setValidationState('invalid');
+      const detail = blockers.join('；');
+      setMessage(`无法保存：${detail}`);
+      onToast?.(`无法保存：${detail}`);
+      return;
+    }
+    applyDraft(true);
+  }
+
+  function reloadAttributes() {
+    setAttributeReloadKey((prev) => prev + 1);
   }
 
   function handleValidate() {
@@ -1195,14 +1253,20 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onTo
 
   function openImageManager(row: VariantRowView) {
     const single = variantRowsOfDraft.length === 0;
-    setImageManager({ session: Date.now(), itemIndex: row.itemIndex, single });
+    const item = single
+      ? objectOf(undefined)
+      : objectOf((buildResult?.draft?.items || task.draft?.items || [])[row.itemIndex]);
+    // capture the images at open time: the session holds the source so the
+    // manager always shows exactly what was opened, even if the draft is
+    // rebuilt underneath (unified source for both managers)
+    const images = single
+      ? lineList(form.images)
+      : variantImageEdits[String(row.itemIndex)] || fullItemImages(item);
+    setImageManager({ session: Date.now(), itemIndex: row.itemIndex, single, images });
   }
 
   function imageManagerImages(): string[] {
-    if (!imageManager) return [];
-    if (imageManager.single) return lineList(form.images);
-    const item = objectOf((buildResult?.draft?.items || task.draft?.items || [])[imageManager.itemIndex]);
-    return variantImageEdits[String(imageManager.itemIndex)] || fullItemImages(item);
+    return imageManager?.images || [];
   }
 
   function saveImageManagerImages(nextImages: string[]) {
@@ -1228,7 +1292,7 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onTo
     );
   }
 
-  const missingDims = productMissing.filter((item) => item.startsWith('包装'));
+  const missingDims = (validation?.main || []).filter((item) => item.startsWith('包装'));
 
   return (
     <div className="ozon-ai-edit-page">
@@ -1240,7 +1304,7 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onTo
         <div className="ozon-ai-edit-top-actions">
           <span className={shopLabel.includes('已绑定') ? 'ready' : ''}>{shopLabel}</span>
           <span className={`ozon-ai-edit-draft-status ${missing.length ? 'warn' : ''}`}>{draftStatusLabel(task.status)}</span>
-          <button type="button" onClick={onBackTo1688}>关闭</button>
+          <button type="button" onClick={onClose}>关闭</button>
         </div>
       </div>
 
@@ -1267,7 +1331,7 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onTo
                       <button type="button" onClick={() => setCategoryDrawerOpen(true)}>更换类目</button>
                     </div>
                   </div>
-                  <FieldError show={attemptedProduct && productMissing.includes('类目和类型')} text="请选择带 type_id 的 Ozon 末级类目" />
+                  <FieldError show={attemptedProduct && (validation?.main || []).includes('类目和类型')} text="请选择带 type_id 的 Ozon 末级类目" />
                 </div>
 
                 <div className="ozon-attr-item full">
@@ -1313,7 +1377,7 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onTo
                       placeholder="如: 800"
                     />
                   </div>
-                  <FieldError show={attemptedProduct && productMissing.includes('含包装重量')} text="重量必须大于 0" />
+                  <FieldError show={attemptedProduct && (validation?.main || []).includes('含包装重量')} text="重量必须大于 0" />
                 </div>
 
                 <div className="ozon-attr-item full">
@@ -1347,7 +1411,7 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onTo
                       placeholder="0.00"
                     />
                   </div>
-                  <FieldError show={attemptedProduct && productMissing.includes('价格')} text="价格必须大于 0" />
+                  <FieldError show={attemptedProduct && (validation?.main || []).includes('价格')} text="价格必须大于 0" />
                 </div>
 
                 <div className="ozon-attr-item">
@@ -1367,7 +1431,7 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onTo
                   <div className="ozon-attr-control">
                     <input value={form.offerId} onChange={(event) => updateField('offerId', event.target.value)} placeholder="Ozon 商品货号" />
                   </div>
-                  <FieldError show={attemptedProduct && productMissing.includes('货号')} text="货号不能为空" />
+                  <FieldError show={attemptedProduct && (validation?.main || []).includes('货号')} text="货号不能为空" />
                 </div>
               </div>
             </section>
@@ -1391,9 +1455,16 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onTo
               </div>
 
               <div className="ozon-attrs-status-row">
-                <span>{attributesLoading ? '正在加载类目特征...' : attributesMessage}</span>
-                <button type="button" onClick={() => setAttributeReloadKey((value) => value + 1)}>重新加载</button>
+                <span>{attributeLoadState === 'loading' ? '正在加载类目特征...' : attributesMessage}</span>
+                <button type="button" onClick={reloadAttributes}>重新加载</button>
               </div>
+
+              {unsupportedRequiredMedia.length > 0 && (
+                <div className="ozon-attr-warning-block">
+                  该 Ozon 类目要求以下媒体属性，当前编辑器暂不支持直接填写，请勿提交：
+                  {unsupportedRequiredMedia.map((attr) => attr.name).join('、')}
+                </div>
+              )}
 
               <div className="ozon-attr-grid">
                 <div className="ozon-attr-item">
@@ -1401,7 +1472,7 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onTo
                   <div className="ozon-attr-control">
                     <input value={form.model} onChange={(event) => updateField('model', event.target.value)} placeholder="型号名称" />
                   </div>
-                  <FieldError show={attemptedAttributes && attributeMissing.includes('型号名称')} text="型号名称不能为空" />
+                  <FieldError show={attemptedAttributes && (validation?.attributes || []).includes('型号名称')} text="型号名称不能为空" />
                 </div>
 
                 <div className="ozon-attr-item">
@@ -1519,11 +1590,14 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onTo
                           placeholder='可选，Rich Content JSON 数据，例如 [{"type":"image","data":{"url":"..."}}]'
                         />
                       </div>
+                      {richContentInvalid && (
+                        <small className="ozon-attr-error-text ozon-other-attr-error">Rich Content 不是合法 JSON，保存和提交将被阻止</small>
+                      )}
                     </div>
                     <div className="ozon-other-attr-item">
                       <label className="ozon-attr-label ozon-other-attr-label">
                         自定义属性（属性ID=值）
-                        <span className="unit-warning">高级模式；每行一个，例如 85=NO NAME</span>
+                        <span className="unit-warning">高级模式；每行一个，例如 12345=示例值</span>
                       </label>
                       <div className="ozon-attr-control ozon-other-attr-control">
                         <textarea
@@ -1531,9 +1605,17 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onTo
                           onChange={(event) => updateField('customAttributes', event.target.value)}
                           rows={5}
                           style={{ fontFamily: 'monospace', fontSize: 12 }}
-                          placeholder={'85=NO NAME\n12345=示例值\n一行一个，属性ID=值'}
+                          placeholder={'12345=示例值\n每行一个，属性ID=值；ID 必须是数字'}
                         />
                       </div>
+                      {customParsed.errors.map((error) => (
+                        <small key={error} className="ozon-attr-error-text ozon-other-attr-error">{error}</small>
+                      ))}
+                      {customParsed.conflicts.map((attrId) => (
+                        <small key={`conflict-${attrId}`} className="ozon-attr-error-text ozon-other-attr-error">
+                          属性 {attrId} 已有专用编辑字段或属于当前类目属性，请勿在自定义属性中重复填写
+                        </small>
+                      ))}
                     </div>
                   </div>
                 )}
@@ -1622,12 +1704,13 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onTo
         validationState={validationState}
         lastSavedAt={lastSavedAt}
         aiFilling={attributeAiFilling}
-        attributesLoading={attributesLoading}
-        onSave={() => applyDraft(true)}
+        attributeLoadState={attributeLoadState}
+        onSave={handleSave}
         onValidate={handleValidate}
         onSubmit={submitDraft}
-        onBack={onBackTo1688}
+        onBack={onClose}
         onAiFillAttributes={() => fillCategoryAttributesByAi(false)}
+        onRetryAttributes={reloadAttributes}
       />
 
       <OzonCategoryDrawer

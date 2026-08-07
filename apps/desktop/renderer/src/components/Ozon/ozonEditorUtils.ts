@@ -48,7 +48,45 @@ export type DraftBuildResult = {
   draft: OzonDraft;
   firstItem: Record<string, unknown>;
   missing: string[];
+  validation: DraftValidationBreakdown;
 };
+
+export type DraftValidationBreakdown = {
+  main: string[];
+  attributes: string[];
+  variants: string[];
+  payload: string[];
+  all: string[];
+};
+
+export type AttributeLoadState = 'idle' | 'loading' | 'ready' | 'error';
+
+export type EditorActions = {
+  canSave: boolean;
+  canValidate: boolean;
+  canSubmit: boolean;
+  canAiFill: boolean;
+};
+
+/**
+ * Pure gating rule shared by the bottom bar and the editor handlers.
+ * Only `ready` category metadata unlocks save/validate/submit/AI fill.
+ */
+export function deriveEditorActions(input: {
+  attributeLoadState: AttributeLoadState;
+  validationState: 'idle' | 'validating' | 'valid' | 'invalid';
+  submitting: boolean;
+  hasDraft: boolean;
+}): EditorActions {
+  const attributeReady = input.attributeLoadState === 'ready';
+  const notBusy = !input.submitting;
+  return {
+    canSave: attributeReady && notBusy,
+    canValidate: attributeReady && notBusy,
+    canSubmit: attributeReady && input.validationState === 'valid' && notBusy && input.hasDraft,
+    canAiFill: attributeReady && notBusy,
+  };
+}
 
 export type VariantRowView = {
   key: string;
@@ -94,6 +132,15 @@ export function priceForPayload(value: string, fallback = '1'): string {
 export function intForPayload(value: string): number {
   const number = Number(String(value || '').trim());
   return Number.isFinite(number) && number > 0 ? Math.round(number) : 0;
+}
+
+/**
+ * User-input price validity: an empty, zero or negative price is never a
+ * valid price, regardless of any payload-level defensive normalization.
+ */
+export function isValidPositivePrice(value: string): boolean {
+  const parsed = Number(String(value ?? '').trim());
+  return Number.isFinite(parsed) && parsed > 0;
 }
 
 export function lengthToMillimeter(value: unknown, sourceUnit: string): string {
@@ -220,32 +267,110 @@ export function buildAttribute(attrId: number, value: string, dictionaryIds?: Re
   };
 }
 
+/**
+ * Attributes that carry a single opaque value (e.g. Rich Content JSON) must
+ * never be split on newlines. The whole trimmed string is one value.
+ */
+export function buildSingleValueAttribute(attrId: number, value: string): Record<string, unknown> | null {
+  const normalized = String(value || '').trim();
+  if (!normalized) return null;
+  return {
+    id: attrId,
+    complex_id: 0,
+    values: [{ value: normalized }],
+  };
+}
+
+/**
+ * Rich Content must be a single valid JSON document (object or array).
+ * Empty input is valid (attribute simply omitted). Invalid JSON reports a
+ * user-facing error instead of silently mangling the payload.
+ */
+export function normalizeRichContentJson(value: string): { ok: true; value: string } | { ok: false; error: string } {
+  const trimmed = String(value || '').trim();
+  if (!trimmed) return { ok: true, value: '' };
+  try {
+    const parsed = JSON.parse(trimmed);
+    return { ok: true, value: JSON.stringify(parsed) };
+  } catch {
+    return { ok: false, error: 'Rich Content JSON 格式无效' };
+  }
+}
+
 export function parseCustomAttributes(value: string): Record<string, unknown>[] {
-  const attrs: Record<string, unknown>[] = [];
+  return parseCustomAttributesDetailed(value, []).attributes;
+}
+
+export type CustomAttributeParseResult = {
+  attributes: Record<string, unknown>[];
+  errors: string[];
+  conflicts: number[];
+};
+
+/**
+ * Parse `ID=value` lines. Controlled attributes (brand/model/weight/...)
+ * and attributes of the current category are rejected as conflicts — the
+ * user must use the dedicated editors for those. Duplicate ids are dropped.
+ */
+export function parseCustomAttributesDetailed(
+  value: string,
+  categoryAttributes: Array<{ id: number }>,
+): CustomAttributeParseResult {
+  const attributes: Record<string, unknown>[] = [];
+  const errors: string[] = [];
+  const conflicts: number[] = [];
   const seen = new Set<number>();
+  const categoryIds = new Set(categoryAttributes.map((attr) => attr.id));
 
   for (const line of String(value || '').split(/\r?\n/)) {
     if (!line.includes('=')) continue;
     const [rawId, ...valueParts] = line.split('=');
     const attrId = Number(rawId.trim());
-    if (!Number.isFinite(attrId) || attrId <= 0 || seen.has(attrId)) continue;
-    const attr = buildAttribute(Math.round(attrId), valueParts.join('=').trim());
-    if (!attr) continue;
-    attrs.push(attr);
-    seen.add(Math.round(attrId));
+    if (!Number.isFinite(attrId) || attrId <= 0) {
+      errors.push(`自定义属性行格式无效：${line}`);
+      continue;
+    }
+    const id = Math.round(attrId);
+    const attrValue = valueParts.join('=').trim();
+    if (!attrValue) {
+      errors.push(`属性 ${id} 缺少值`);
+      continue;
+    }
+    if (seen.has(id)) {
+      errors.push(`属性 ${id} 重复填写`);
+      continue;
+    }
+    seen.add(id);
+    if (CONTROLLED_ATTR_IDS.has(id)) {
+      conflicts.push(id);
+      errors.push(`属性 ${id} 已有专用编辑字段，请勿在自定义属性中重复填写。`);
+      continue;
+    }
+    if (categoryIds.has(id)) {
+      conflicts.push(id);
+      errors.push(`属性 ${id} 属于当前类目属性，请在“填写更多属性”中编辑。`);
+      continue;
+    }
+    const attr = buildAttribute(id, attrValue);
+    if (attr) attributes.push(attr);
   }
 
-  return attrs;
+  return { attributes, errors, conflicts };
 }
 
 export function buildDynamicAttributes(
   dynamicValues: Record<string, string>,
   categoryAttributes: Array<{ id: number }>,
   dictionaryValueIds: DictionaryValueIds,
+  allowUnknownCategoryAttributes = false,
 ): Record<string, unknown>[] {
+  const knownIds = new Set(categoryAttributes.map((attr) => attr.id));
+  // When category metadata is unknown (not loaded / load failed), carrying
+  // stale dynamic attributes from a previous category is unsafe: the editor
+  // must not build them into a submittable payload.
+  if (!allowUnknownCategoryAttributes && knownIds.size === 0) return [];
   const attrs: Record<string, unknown>[] = [];
   const seen = new Set<number>();
-  const knownIds = new Set(categoryAttributes.map((attr) => attr.id));
 
   for (const [rawId, value] of Object.entries(dynamicValues)) {
     const attrId = Number(rawId);
@@ -269,7 +394,9 @@ export function buildDynamicAttributes(
  *   plus product name (4180) ONLY when the current category metadata
  *   actually declares attribute 4180 — its value always mirrors form.name.
  * - Dynamic: category attributes the user edited in the editor.
- * - Custom: `ID=value` lines the user typed in the advanced section.
+ * - Custom: `ID=value` lines the user typed in the advanced section; lines
+ *   conflicting with controlled/category attributes are excluded here and
+ *   surfaced as validation errors instead.
  */
 export function buildAttributes(
   baseItem: Record<string, unknown>,
@@ -278,7 +405,8 @@ export function buildAttributes(
   categoryAttributes: Array<{ id: number }>,
   dictionaryValueIds: DictionaryValueIds,
 ): Record<string, unknown>[] {
-  const customAttrs = parseCustomAttributes(form.customAttributes);
+  const custom = parseCustomAttributesDetailed(form.customAttributes, categoryAttributes);
+  const customAttrs = custom.attributes;
   const dynamicAttrs = buildDynamicAttributes(dynamicValues, categoryAttributes, dictionaryValueIds);
   const customIds = new Set(customAttrs.map((attr) => Number(attr.id)).filter(Boolean));
   const dynamicIds = new Set(dynamicAttrs.map((attr) => Number(attr.id)).filter(Boolean));
@@ -297,6 +425,7 @@ export function buildAttributes(
   const productNameAttr = categoryIds.has(ATTR_PRODUCT_NAME)
     ? buildAttribute(ATTR_PRODUCT_NAME, form.name)
     : null;
+  const richContent = normalizeRichContentJson(form.richContent);
   const controlled = [
     productNameAttr,
     buildAttribute(ATTR_BRAND, form.brand, dictionaryValueIds[String(ATTR_BRAND)]),
@@ -304,7 +433,7 @@ export function buildAttributes(
     buildAttribute(ATTR_WEIGHT, String(positiveInteger(form.weight))),
     buildAttribute(ATTR_DESCRIPTION, form.description),
     buildAttribute(ATTR_TAGS, normalizeTagsForPayload(form.tags)),
-    buildAttribute(ATTR_RICH_CONTENT, form.richContent),
+    buildSingleValueAttribute(ATTR_RICH_CONTENT, richContent.ok ? richContent.value : form.richContent.trim()),
   ].filter(Boolean) as Record<string, unknown>[];
 
   return [...preserved, ...controlled, ...dynamicAttrs, ...customAttrs];
@@ -314,7 +443,7 @@ export function collectProductPageMissing(form: DraftForm): string[] {
   const missing: string[] = [];
   if (!form.categoryPath.trim() || !intForPayload(form.descriptionCategoryId) || !intForPayload(form.typeId)) missing.push('类目和类型');
   if (!form.offerId.trim()) missing.push('货号');
-  if (Number(priceForPayload(form.price, '0')) <= 0) missing.push('价格');
+  if (!isValidPositivePrice(form.price)) missing.push('价格');
   if (!positiveInteger(form.depth)) missing.push('包装长度');
   if (!positiveInteger(form.width)) missing.push('包装宽度');
   if (!positiveInteger(form.height)) missing.push('包装高度');
@@ -327,13 +456,27 @@ export function isMediaAttributeName(attr: OzonCategoryAttribute): boolean {
   return /video|rich|pdf|json|image|picture|видео|медиа|изображ|фото|富内容|视频|图片|封面|pdf/i.test(name);
 }
 
+/**
+ * Required media attributes (video/pdf/etc.) must never silently disappear:
+ * they stay visible in "填写更多属性" and block submission until the editor
+ * supports them. Optional media attributes may stay hidden. Rich Content is
+ * excluded — it has a dedicated editor.
+ */
+export function collectUnsupportedRequiredMediaAttributes(
+  attrs: OzonCategoryAttribute[],
+): OzonCategoryAttribute[] {
+  return attrs.filter(
+    (attr) => attr.isRequired && !CONTROLLED_ATTR_IDS.has(attr.id) && isMediaAttributeName(attr),
+  );
+}
+
 export function filterCategoryAttributesForMoreAttrs(
   attrs: OzonCategoryAttribute[],
   variantDimensionAttrIds: Set<number>,
 ): OzonCategoryAttribute[] {
   return attrs
     .filter((attr) => !CONTROLLED_ATTR_IDS.has(attr.id))
-    .filter((attr) => !isMediaAttributeName(attr))
+    .filter((attr) => !isMediaAttributeName(attr) || attr.isRequired)
     .filter((attr) => !variantDimensionAttrIds.has(attr.id));
 }
 
@@ -418,6 +561,62 @@ export function collectVariantViewMissing(
   return missing;
 }
 
+/**
+ * Errors that block even saving a draft: malformed Rich Content JSON and
+ * custom attribute conflicts. Missing required fields do NOT block saving —
+ * the user must be able to persist an incomplete draft.
+ */
+export function collectDraftBlockers(
+  form: DraftForm,
+  customCategoryAttributes: Array<{ id: number }>,
+): string[] {
+  const errors: string[] = [];
+  const richContent = normalizeRichContentJson(form.richContent);
+  if (!richContent.ok) errors.push(richContent.error);
+  const custom = parseCustomAttributesDetailed(form.customAttributes, customCategoryAttributes);
+  errors.push(...custom.errors);
+  return unique(errors);
+}
+
+/**
+ * Single source of truth for the editor's final missing list.
+ *
+ * - main:      主要信息 (product page fields)
+ * - attributes:产品属性 (model, required category attrs, rich content,
+ *              custom attribute conflicts, unsupported required media,
+ *              category metadata blockers)
+ * - variants:  变体设置 (per-SKU problems + unconfirmed mapping)
+ * - payload:   payload-level invariants (title/image/category/price)
+ *
+ * `all` is the union of every bucket and equals the missing list used for
+ * badges, validate, save status and submit gating.
+ */
+export function validateDraftForEditor(
+  form: DraftForm,
+  draft: OzonDraft,
+  items: Record<string, unknown>[],
+  dynamicValues: Record<string, string>,
+  requiredAttrs: OzonCategoryAttribute[],
+  categoryAttributes: OzonCategoryAttribute[],
+  attributeMetadataMessage: string,
+): DraftValidationBreakdown {
+  const unsupportedMedia = collectUnsupportedRequiredMediaAttributes(requiredAttrs);
+  const unsupportedMediaIds = new Set(unsupportedMedia.map((attr) => attr.id));
+
+  const main = collectProductPageMissing(form);
+  const attributes = unique([
+    ...collectAttributeMissing(form, dynamicValues, requiredAttrs.filter((attr) => !unsupportedMediaIds.has(attr.id))),
+    ...collectDraftBlockers(form, categoryAttributes),
+    ...unsupportedMedia.map((attr) => `该 Ozon 类目要求媒体属性 ${attr.name}，当前编辑器暂不支持直接填写，请勿提交。`),
+    ...(attributeMetadataMessage ? [attributeMetadataMessage] : []),
+  ]);
+  const variants = collectVariantViewMissing(items, draft);
+  const payload = collectPayloadMissing(draft, items, []);
+  const all = unique([...main, ...attributes, ...variants, ...payload]);
+
+  return { main, attributes, variants, payload, all };
+}
+
 export function variantOf(draft?: OzonDraft): Record<string, unknown> {
   if (!draft) return {};
   const generated = objectOf(draft.generated);
@@ -457,11 +656,14 @@ function variantHasUnconfirmedMapping(draft: OzonDraft, variant: Record<string, 
 /**
  * Resolve the item index for a variant row with an explicit, non-accidental
  * fallback: `Number(undefined)` is NaN and `NaN ?? index` stays NaN, which
- * previously relied on `items[NaN]` returning undefined.
+ * poisoned item lookups. The index must also be inside the items array.
  */
-export function resolveVariantItemIndex(row: Record<string, unknown>, index: number): number {
+export function resolveVariantItemIndex(row: Record<string, unknown>, fallbackIndex: number, itemCount?: number): number {
   const rawItemIndex = Number(row.item_index);
-  return Number.isInteger(rawItemIndex) && rawItemIndex >= 0 ? rawItemIndex : index;
+  if (Number.isInteger(rawItemIndex) && rawItemIndex >= 0 && (itemCount === undefined || rawItemIndex < itemCount)) {
+    return rawItemIndex;
+  }
+  return fallbackIndex;
 }
 
 export function buildVariantTableView(
@@ -476,7 +678,7 @@ export function buildVariantTableView(
   if (variantRowList.length) {
     const items = Array.isArray(draft?.items) ? draft.items : [];
     const rows = variantRowList.map((row, index) => {
-      const itemIndex = resolveVariantItemIndex(row, index);
+      const itemIndex = resolveVariantItemIndex(row, index, items.length);
       const item = objectOf(items[itemIndex] ?? items[index]);
       const editedImages = variantImageEdits[String(itemIndex)];
       const images = editedImages
@@ -568,8 +770,14 @@ export function buildDraft(
   dictionaryValueIds: DictionaryValueIds,
   requiredAttrs: Array<{ id: number; isRequired: boolean; name: string }>,
   variantImageEdits: Record<string, string[]> = {},
+  options: { attributeMetadataReady?: boolean; attributeMetadataMessage?: string } = {},
 ): DraftBuildResult | null {
   if (!task.draft) return null;
+
+  const attributeMetadataReady = options.attributeMetadataReady !== false;
+  const attributeMetadataMessage = attributeMetadataReady
+    ? ''
+    : options.attributeMetadataMessage || '类目属性尚未加载完成';
 
   const draft = task.draft;
   const sourceItems = draft.items.length ? draft.items : [{}];
@@ -584,7 +792,9 @@ export function buildDraft(
     name: form.name.trim().slice(0, 500),
     barcode: form.barcode.trim(),
     offer_id: form.offerId.trim().slice(0, 50),
-    price: priceForPayload(form.price, '1'),
+    // An invalid user price is never silently promoted to 1: keep the
+    // payload truthful ('0') and let validation block save/submit.
+    price: isValidPositivePrice(form.price) ? priceForPayload(form.price, '1') : '0',
     old_price: priceForPayload(form.oldPrice, '0'),
     currency_code: form.currencyCode.trim() || 'CNY',
     description_category_id: descriptionCategoryId,
@@ -613,16 +823,29 @@ export function buildDraft(
         attributes,
         _category_path: firstItem._category_path,
       };
-    const editedImages = variantImageEdits[String(index)];
-    if (editedImages && editedImages.length) {
-      item.images = editedImages;
+    const imageEditKey = String(index);
+    // A key PRESENT in variantImageEdits means "user edited this SKU's
+    // images", even when the array is empty (user deleted all images).
+    // An absent key means "never edited" → keep original images.
+    if (Object.prototype.hasOwnProperty.call(variantImageEdits, imageEditKey)) {
+      const editedImages = variantImageEdits[imageEditKey];
+      item.images = [...editedImages];
       item.primary_image = editedImages[0] || '';
     }
     return item;
   });
 
-  const attributeMissing = collectAttributeMissing(form, dynamicValues, requiredAttrs);
-  const missing = collectPayloadMissing({ ...draft, items: nextItems }, nextItems, attributeMissing);
+  const nextDraft: OzonDraft = { ...draft, items: nextItems };
+  const validation = validateDraftForEditor(
+    form,
+    nextDraft,
+    nextItems,
+    dynamicValues,
+    requiredAttrs as OzonCategoryAttribute[],
+    categoryAttributes as OzonCategoryAttribute[],
+    attributeMetadataMessage,
+  );
+  const missing = validation.all;
   const tags = normalizeTagsForPayload(form.tags).split(/\r?\n/).filter(Boolean);
   const estimatedDimensions = objectOf(draft.generated?.estimated_dimensions);
   const lengthCm = form.dimensionUnit === 'mm' ? Number(firstItem.depth) / 10 : Number(firstItem.depth) || 0;
@@ -651,7 +874,7 @@ export function buildDraft(
 
   return {
     draft: {
-      ...draft,
+      ...nextDraft,
       status: missing.length ? 'needs_review' : 'ready',
       generated,
       items: nextItems,
@@ -659,6 +882,7 @@ export function buildDraft(
     },
     firstItem,
     missing,
+    validation,
   };
 }
 

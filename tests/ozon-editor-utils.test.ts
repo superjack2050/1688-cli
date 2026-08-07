@@ -9,16 +9,24 @@ import {
   ATTR_WEIGHT,
   buildAttributes,
   buildDraft,
+  buildDynamicAttributes,
   buildVariantTableView,
+  collectDraftBlockers,
   collectHiddenRequiredAttributes,
+  collectProductPageMissing,
   collectRequiredExpandedIds,
+  collectUnsupportedRequiredMediaAttributes,
   collectVariantViewMissing,
+  deriveEditorActions,
   filterCategoryAttributesForMoreAttrs,
   filterTreeNodes,
   isMediaAttributeName,
+  isValidPositivePrice,
   lineList,
   normalizeImageUrl,
+  normalizeRichContentJson,
   parseCustomAttributes,
+  parseCustomAttributesDetailed,
   positiveInteger,
   pruneDynamicValuesForCategory,
   resolveVariantItemIndex,
@@ -350,7 +358,237 @@ describe('ozon editor utils', () => {
       expect(result!.draft.items[1].images).toEqual(['https://example.com/edited.jpg']);
       expect(result!.draft.items[1].primary_image).toBe('https://example.com/edited.jpg');
       expect(result!.draft.items[0].primary_image).toBe('https://example.com/1.jpg');
-      expect(result!.missing).toEqual(['Тип']);
+      expect(result!.missing).toEqual(['Тип', '规格属性映射']);
+    });
+  });
+
+  describe('single source of truth for missing (P0-01)', () => {
+    it('result.missing always equals validation.all', () => {
+      const task = makeTask([baseItem()]);
+      const result = buildDraft(
+        task,
+        form({ price: '' }),
+        {},
+        [],
+        {},
+        [{ id: 3001, isRequired: true, name: 'Тип' }],
+      );
+      expect(result).not.toBeNull();
+      expect(result!.validation.all).toEqual(result!.missing);
+      expect(result!.missing).toContain('价格');
+      expect(result!.missing).toContain('Тип');
+    });
+
+    it('validation buckets union into all without duplicates', () => {
+      const task = makeTask([baseItem({ name: '', primary_image: '', price: '0' })]);
+      const result = buildDraft(
+        task,
+        form({ name: '', price: '' }),
+        {},
+        [],
+        {},
+        [{ id: 3001, isRequired: true, name: 'Тип' }],
+      );
+      expect(result).not.toBeNull();
+      const { main, attributes, variants, payload, all } = result!.validation;
+      expect(all).toEqual([...new Set([...main, ...attributes, ...variants, ...payload])]);
+      expect(all).toContain('价格');
+      expect(all).toContain('俄语标题');
+    });
+
+    it('category metadata not ready surfaces as a missing attribute', () => {
+      const task = makeTask([baseItem()]);
+      const result = buildDraft(
+        task,
+        form(),
+        {},
+        [],
+        {},
+        [],
+        {},
+        { attributeMetadataReady: false, attributeMetadataMessage: '正在加载类目特征...' },
+      );
+      expect(result).not.toBeNull();
+      expect(result!.missing).toContain('正在加载类目特征...');
+    });
+  });
+
+  describe('price safety (P0-02)', () => {
+    it('never promotes an empty/zero price to 1 in the payload', () => {
+      const task = makeTask([baseItem()]);
+      for (const price of ['', '0', '0.0', '-5', 'abc']) {
+        const result = buildDraft(task, form({ price }), {}, [], {}, []);
+        expect(result).not.toBeNull();
+        expect(result!.draft.items[0].price).toBe('0');
+        expect(result!.missing).toContain('价格');
+      }
+    });
+
+    it('keeps a valid price in the payload', () => {
+      const task = makeTask([baseItem()]);
+      const result = buildDraft(task, form({ price: ' 12.5 ' }), {}, [], {}, []);
+      expect(result).not.toBeNull();
+      expect(result!.draft.items[0].price).toBe('12.5');
+      expect(result!.missing).not.toContain('价格');
+    });
+
+    it('isValidPositivePrice rejects empty/zero/negative and accepts decimals', () => {
+      expect(isValidPositivePrice('')).toBe(false);
+      expect(isValidPositivePrice('0')).toBe(false);
+      expect(isValidPositivePrice('-1')).toBe(false);
+      expect(isValidPositivePrice('12.5')).toBe(true);
+    });
+  });
+
+  describe('editor gating matrix (P0-03/P0-04)', () => {
+    it('only ready category metadata unlocks save/validate/submit/AI fill', () => {
+      expect(deriveEditorActions({ attributeLoadState: 'idle', validationState: 'valid', submitting: false, hasDraft: true })).toEqual({
+        canSave: false, canValidate: false, canSubmit: false, canAiFill: false,
+      });
+      expect(deriveEditorActions({ attributeLoadState: 'loading', validationState: 'valid', submitting: false, hasDraft: true })).toEqual({
+        canSave: false, canValidate: false, canSubmit: false, canAiFill: false,
+      });
+      expect(deriveEditorActions({ attributeLoadState: 'error', validationState: 'valid', submitting: false, hasDraft: true })).toEqual({
+        canSave: false, canValidate: false, canSubmit: false, canAiFill: false,
+      });
+    });
+
+    it('ready + valid + not busy + hasDraft unlocks everything', () => {
+      expect(deriveEditorActions({ attributeLoadState: 'ready', validationState: 'valid', submitting: false, hasDraft: true })).toEqual({
+        canSave: true, canValidate: true, canSubmit: true, canAiFill: true,
+      });
+    });
+
+    it('ready still blocks submit without a passed validation', () => {
+      expect(deriveEditorActions({ attributeLoadState: 'ready', validationState: 'idle', submitting: false, hasDraft: true }).canSubmit).toBe(false);
+      expect(deriveEditorActions({ attributeLoadState: 'ready', validationState: 'valid', submitting: true, hasDraft: true }).canSubmit).toBe(false);
+      expect(deriveEditorActions({ attributeLoadState: 'ready', validationState: 'valid', submitting: false, hasDraft: false }).canSubmit).toBe(false);
+    });
+
+    it('dynamic attributes are dropped when category metadata is unknown', () => {
+      expect(buildDynamicAttributes({ '2001': 'x' }, [], {})).toEqual([]);
+      expect(buildDynamicAttributes({ '2001': 'x' }, [{ id: 2001 }], {})).toHaveLength(1);
+    });
+  });
+
+  describe('multi-SKU image deletion (P1-01)', () => {
+    it('an empty edited-image array clears images and primary image', () => {
+      const items = [baseItem(), baseItem({ item_index: 1, name: 'SKU 2', primary_image: 'https://example.com/2.jpg' })];
+      const task = makeTask(items);
+      const result = buildDraft(task, form(), {}, [], {}, [], { '1': [] });
+      expect(result).not.toBeNull();
+      expect(result!.draft.items[1].images).toEqual([]);
+      expect(result!.draft.items[1].primary_image).toBe('');
+      expect(result!.draft.items[0].primary_image).toBe('https://example.com/1.jpg');
+      expect(result!.missing).toContain('SKU 2 主图');
+    });
+
+    it('an absent key keeps the original images untouched', () => {
+      const items = [baseItem(), baseItem({ item_index: 1, name: 'SKU 2', primary_image: 'https://example.com/2.jpg' })];
+      const task = makeTask(items);
+      const result = buildDraft(task, form(), {}, [], {}, [], { '0': ['https://example.com/new-main.jpg'] });
+      expect(result).not.toBeNull();
+      expect(result!.draft.items[1].primary_image).toBe('https://example.com/2.jpg');
+      expect(result!.draft.items[0].primary_image).toBe('https://example.com/new-main.jpg');
+    });
+  });
+
+  describe('rich content (P1-03/P1-04)', () => {
+    it('pretty-printed multiline JSON is serialized as one single value', () => {
+      const attrs = buildAttributes(baseItem(), form({ richContent: '{\n  "blocks": [\n    {"type": "text"}\n  ]\n}' }), {}, [], []);
+      const rich = attrs.find((item) => Number(item.id) === ATTR_RICH_CONTENT);
+      expect(rich!.values).toHaveLength(1);
+      expect(rich!.values).toEqual([{ value: '{"blocks":[{"type":"text"}]}' }]);
+    });
+
+    it('normalizeRichContentJson validates and rejects malformed JSON', () => {
+      expect(normalizeRichContentJson('{"blocks":[]}').ok).toBe(true);
+      expect(normalizeRichContentJson('  {\n "a": 1\n}\n ').ok).toBe(true);
+      expect(normalizeRichContentJson('{invalid').ok).toBe(false);
+      expect(normalizeRichContentJson('').ok).toBe(true);
+    });
+
+    it('malformed rich content blocks saving', () => {
+      expect(collectDraftBlockers(form({ richContent: '{invalid' }), [])).toContain('Rich Content JSON 格式无效');
+      expect(collectDraftBlockers(form({ richContent: '{"blocks":[]}' }), [])).toEqual([]);
+    });
+  });
+
+  describe('custom attribute conflicts (P1-05/P1-06)', () => {
+    it('controlled attributes are rejected as conflicts', () => {
+      const parsed = parseCustomAttributesDetailed(`85=BAD\n2001=red`, []);
+      expect(parsed.conflicts).toContain(ATTR_BRAND);
+      expect(parsed.attributes.map((attr) => Number(attr.id))).toEqual([2001]);
+      const attrs = buildAttributes(baseItem(), form({ customAttributes: `85=BAD\n2001=red` }), {}, [], []);
+      const brand = attrs.find((item) => Number(item.id) === ATTR_BRAND);
+      expect(brand!.values).toEqual([{ value: 'NO NAME' }]);
+      expect(attrs.filter((item) => Number(item.id) === 2001)).toHaveLength(1);
+    });
+
+    it('category attributes are rejected as conflicts', () => {
+      const parsed = parseCustomAttributesDetailed('2001=red', [{ id: 2001 }]);
+      expect(parsed.conflicts).toContain(2001);
+      expect(parsed.attributes).toEqual([]);
+      expect(parsed.errors).toContain('属性 2001 属于当前类目属性，请在“填写更多属性”中编辑。');
+      expect(collectDraftBlockers(form({ customAttributes: '2001=red' }), [{ id: 2001 }])).toContain(
+        '属性 2001 属于当前类目属性，请在“填写更多属性”中编辑。',
+      );
+    });
+
+    it('reports malformed and duplicate lines as errors', () => {
+      const parsed = parseCustomAttributesDetailed('2001=red\n2001=blue\nnot-a-line\n2002=', []);
+      expect(parsed.errors).toContain('属性 2001 重复填写');
+      expect(parsed.errors).toContain('属性 2002 缺少值');
+      expect(parsed.attributes.map((attr) => Number(attr.id))).toEqual([2001]);
+    });
+  });
+
+  describe('required media attributes (P1-08)', () => {
+    const mediaAttr = (id: number, name: string, isRequired: boolean) => ({
+      id, name, description: '', groupId: null, groupName: '',
+      dictionaryId: 0, isRequired, isAspect: false, isCollection: false,
+      maxValueCount: 1, categoryDependent: false, attributeComplexId: 0, complexIsCollection: false,
+    });
+
+    it('lists required unsupported media but ignores optional and plain attrs', () => {
+      const attrs = [
+        mediaAttr(3001, 'Видео', true),
+        mediaAttr(3002, 'Видео', false),
+        mediaAttr(3003, 'Обычное поле', true),
+      ];
+      expect(collectUnsupportedRequiredMediaAttributes(attrs).map((attr) => attr.id)).toEqual([3001]);
+    });
+
+    it('keeps required media visible in the more-attrs list', () => {
+      const filtered = filterCategoryAttributesForMoreAttrs(
+        [mediaAttr(3001, 'Видео', true), mediaAttr(3002, 'Видео', false), mediaAttr(3003, 'Обычное', false)],
+        new Set(),
+      );
+      expect(filtered.map((attr) => attr.id)).toEqual([3001, 3003]);
+    });
+
+    it('blocks submission through the validation breakdown', () => {
+      const task = makeTask([baseItem()]);
+      const result = buildDraft(task, form(), {}, [], {}, [mediaAttr(3001, 'Видео', true)]);
+      expect(result).not.toBeNull();
+      expect(result!.missing.some((item) => item.includes('该 Ozon 类目要求媒体属性 Видео'))).toBe(true);
+    });
+  });
+
+  describe('item_index bounds (P2-02)', () => {
+    it('clamps an out-of-range item_index to the fallback', () => {
+      expect(resolveVariantItemIndex({ item_index: 5 }, 1, 3)).toBe(1);
+      expect(resolveVariantItemIndex({ item_index: -1 }, 0, 3)).toBe(0);
+      expect(resolveVariantItemIndex({ item_index: 2 }, 1, 3)).toBe(2);
+      expect(resolveVariantItemIndex({ item_index: 2 }, 1)).toBe(2);
+    });
+  });
+
+  describe('price missing collection', () => {
+    it('collectProductPageMissing flags non-positive prices', () => {
+      expect(collectProductPageMissing(form({ price: '' }))).toContain('价格');
+      expect(collectProductPageMissing(form({ price: '0' }))).toContain('价格');
+      expect(collectProductPageMissing(form({ price: '12' }))).not.toContain('价格');
     });
   });
 });

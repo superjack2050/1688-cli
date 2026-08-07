@@ -263,6 +263,7 @@ export default function OzonProductPage({ tasks, onBackTo1688, onTaskUpdate }: P
               task={selectedTask}
               onTaskUpdate={handleTaskUpdate}
               onBackTo1688={onBackTo1688}
+              onClose={closeTask}
               onToast={showToast}
             />
           </aside>
