@@ -8,505 +8,56 @@ import {
   type OzonDraft,
 } from '../../services/api';
 import type { OzonListingTask, OzonListingTaskPatch, OzonListingTaskStatus } from '../Results/ozonListing/types';
-import { formatMissingFields, unique } from '../Results/ozonListing/precheck';
+import { formatMissingFields } from '../Results/ozonListing/precheck';
+import {
+  ATTR_BRAND,
+  ATTR_DESCRIPTION,
+  ATTR_MODEL,
+  ATTR_RICH_CONTENT,
+  ATTR_TAGS,
+  ATTR_WEIGHT,
+  buildDraft,
+  buildVariantTableView,
+  collectAttributeMissing,
+  collectHiddenRequiredAttributes,
+  collectProductPageMissing,
+  collectVariantViewMissing,
+  CONTROLLED_ATTR_IDS,
+  createDraftForm,
+  filterCategoryAttributesForMoreAttrs,
+  firstItemOf,
+  intForPayload,
+  lineList,
+  normalizeImageUrl,
+  objectOf,
+  pruneDynamicValuesForCategory,
+  text,
+  type CategoryTreeViewNode,
+  type DictionaryValueIds,
+  type DraftBuildResult,
+  type DraftForm,
+  type VariantRowView,
+} from './ozonEditorUtils';
 import OzonEditorNav, { type EditorSectionId } from './OzonEditorNav';
 import OzonEditorBottomBar, { type ValidationState } from './OzonEditorBottomBar';
 import OzonCategoryDrawer from './OzonCategoryDrawer';
+import OzonImageManager from './OzonImageManager';
 
-const ATTR_BRAND = 85;
-const ATTR_MODEL = 9048;
-const ATTR_DESCRIPTION = 4191;
-const ATTR_TAGS = 23171;
-const ATTR_WEIGHT = 4497;
-const ATTR_RICH_CONTENT = 11254;
-const CONTROLLED_ATTR_IDS = new Set([ATTR_BRAND, ATTR_MODEL, ATTR_DESCRIPTION, ATTR_TAGS, ATTR_WEIGHT, ATTR_RICH_CONTENT]);
-
-type DraftForm = {
-  name: string;
-  offerId: string;
-  barcode: string;
-  price: string;
-  oldPrice: string;
-  currencyCode: string;
-  descriptionCategoryId: string;
-  typeId: string;
-  categoryPath: string;
-  brand: string;
-  model: string;
-  description: string;
-  tags: string;
-  images: string;
-  dimensionUnit: string;
-  depth: string;
-  width: string;
-  height: string;
-  weightUnit: string;
-  weight: string;
-  customAttributes: string;
-};
-
-type DraftBuildResult = {
-  draft: OzonDraft;
-  firstItem: Record<string, unknown>;
-  missing: string[];
-};
-
-type DictionaryValueIds = Record<string, Record<string, number>>;
-
-type VariantRowView = {
-  key: string;
-  skuName: string;
-  images: string[];
-  offerId: string;
-  price: string;
-  stock: string;
-  values: Record<string, unknown>;
-};
-
-type Props = {
-  task: OzonListingTask;
-  onTaskUpdate?: (key: string, patch: OzonListingTaskPatch) => void;
-  onBackTo1688: () => void;
-  onToast?: (message: string) => void;
-};
-
-function objectOf(value: unknown): Record<string, unknown> {
-  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
+function categoryDescriptionId(entry: OzonCategoryEntry): number {
+  return Number(entry.descriptionCategoryId || entry.description_category_id || 0);
 }
 
-function text(value: unknown): string {
-  if (value === null || value === undefined) return '';
-  return String(value).trim();
+function categoryTypeId(entry: OzonCategoryEntry): number {
+  return Number(entry.typeId || entry.type_id || 0);
 }
 
-function numberText(value: unknown): string {
-  if (value === null || value === undefined || value === '') return '';
-  const number = Number(String(value).replace(/[^\d.-]/g, ''));
-  return Number.isFinite(number) ? String(number) : text(value);
-}
-
-function positiveInteger(value: string): number {
-  const match = String(value || '').match(/\d+(?:\.\d+)?/);
-  if (!match) return 0;
-  const number = Number(match[0]);
-  return Number.isFinite(number) && number > 0 ? Math.max(1, Math.round(number)) : 0;
-}
-
-function priceForPayload(value: string, fallback = '1'): string {
-  const match = String(value || '').match(/\d+(?:\.\d+)?/);
-  if (!match) return fallback;
-  const number = Number(match[0]);
-  if (!Number.isFinite(number)) return fallback;
-  return String(Math.max(number, fallback === '0' ? 0 : 1));
-}
-
-function intForPayload(value: string): number {
-  const number = Number(String(value || '').trim());
-  return Number.isFinite(number) && number > 0 ? Math.round(number) : 0;
-}
-
-function lengthToMillimeter(value: unknown, sourceUnit: string): string {
-  const number = Number(numberText(value));
-  if (!Number.isFinite(number) || number <= 0) return '';
-  return sourceUnit === 'cm' ? String(Math.round(number * 10)) : String(Math.round(number));
-}
-
-function attributeValue(item: Record<string, unknown>, attrId: number): string {
-  const attrs = Array.isArray(item.attributes) ? item.attributes : [];
-  for (const rawAttr of attrs) {
-    const attr = objectOf(rawAttr);
-    if (Number(attr.id) !== attrId) continue;
-    const values = Array.isArray(attr.values) ? attr.values : [];
-    return values
-      .map((value) => text(objectOf(value).value || objectOf(value).dictionary_value_id || value))
-      .filter(Boolean)
-      .join('\n');
-  }
-  return '';
-}
-
-function attributeValuesById(item: Record<string, unknown>): Record<string, string> {
-  const values: Record<string, string> = {};
-  const attrs = Array.isArray(item.attributes) ? item.attributes : [];
-  for (const rawAttr of attrs) {
-    const attr = objectOf(rawAttr);
-    const attrId = Number(attr.id);
-    if (!attrId) continue;
-    const attrValues = Array.isArray(attr.values) ? attr.values : [];
-    const lines = attrValues
-      .map((value) => text(objectOf(value).value || objectOf(value).dictionary_value_id || value))
-      .filter(Boolean);
-    if (lines.length) values[String(attrId)] = lines.join('\n');
-  }
-  return values;
-}
-
-function attributeDictionaryIdsById(item: Record<string, unknown>): DictionaryValueIds {
-  const values: DictionaryValueIds = {};
-  const attrs = Array.isArray(item.attributes) ? item.attributes : [];
-  for (const rawAttr of attrs) {
-    const attr = objectOf(rawAttr);
-    const attrId = Number(attr.id);
-    if (!attrId) continue;
-    const attrValues = Array.isArray(attr.values) ? attr.values : [];
-    for (const rawValue of attrValues) {
-      const value = objectOf(rawValue);
-      const label = text(value.value);
-      const dictionaryValueId = Number(value.dictionary_value_id || 0);
-      if (!label || dictionaryValueId <= 0) continue;
-      values[String(attrId)] = { ...(values[String(attrId)] || {}), [label]: dictionaryValueId };
-    }
-  }
-  return values;
-}
-
-function lineList(value: string): string[] {
-  return unique(
-    String(value || '')
-      .split(/\r?\n|,/)
-      .map((line) => line.trim())
-      .filter(Boolean),
-  );
-}
-
-function normalizeImageUrl(value: string): string {
-  const url = value.trim();
-  if (!url) return '';
-  if (url.startsWith('//')) return `https:${url}`;
-  return url;
-}
-
-function imageLinesFromItem(item: Record<string, unknown>, task: OzonListingTask): string {
-  const values = Array.isArray(item.images) ? item.images : [];
-  const urls = values.map((value) => normalizeImageUrl(text(value))).filter(Boolean);
-  const primary = normalizeImageUrl(text(item.primary_image || task.image));
-  if (primary && !urls.includes(primary)) urls.unshift(primary);
-  return urls.slice(0, 15).join('\n');
-}
-
-function removeCjk(value: string): string {
-  return value.replace(/[㐀-鿿]+/g, '').trim();
-}
-
-function formatTagsForUi(value: string): string {
-  return unique(
-    String(value || '')
-      .replace(/,/g, '\n')
-      .split(/\r?\n/)
-      .map((line) => removeCjk(line.trim().replace(/^#|^＃/, '').trim()))
-      .filter(Boolean)
-      .map((line) => `#${line}`),
-  ).join('\n');
-}
-
-function normalizeTagsForPayload(value: string): string {
-  return unique(
-    String(value || '')
-      .replace(/,/g, '\n')
-      .split(/\r?\n/)
-      .map((line) => removeCjk(line.trim().replace(/^#|^＃/, '').trim()))
-      .filter(Boolean),
-  ).join('\n');
-}
-
-function buildAttribute(attrId: number, value: string, dictionaryIds?: Record<string, number>): Record<string, unknown> | null {
-  const lines = String(value || '')
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean);
-  if (!lines.length) return null;
-  return {
-    id: attrId,
-    complex_id: 0,
-    values: lines.map((line) => {
-      const dictionaryValueId = Number(dictionaryIds?.[line] || 0);
-      return dictionaryValueId > 0
-        ? { dictionary_value_id: dictionaryValueId, value: line }
-        : { value: line };
-    }),
-  };
-}
-
-function parseCustomAttributes(value: string): Record<string, unknown>[] {
-  const attrs: Record<string, unknown>[] = [];
-  const seen = new Set<number>();
-
-  for (const line of String(value || '').split(/\r?\n/)) {
-    if (!line.includes('=')) continue;
-    const [rawId, ...valueParts] = line.split('=');
-    const attrId = Number(rawId.trim());
-    if (!Number.isFinite(attrId) || attrId <= 0 || seen.has(attrId)) continue;
-    const attr = buildAttribute(Math.round(attrId), valueParts.join('=').trim());
-    if (!attr) continue;
-    attrs.push(attr);
-    seen.add(Math.round(attrId));
-  }
-
-  return attrs;
-}
-
-function buildDynamicAttributes(
-  dynamicValues: Record<string, string>,
-  categoryAttributes: OzonCategoryAttribute[],
-  dictionaryValueIds: DictionaryValueIds,
-): Record<string, unknown>[] {
-  const attrs: Record<string, unknown>[] = [];
-  const seen = new Set<number>();
-  const knownIds = new Set(categoryAttributes.map((attr) => attr.id));
-
-  for (const [rawId, value] of Object.entries(dynamicValues)) {
-    const attrId = Number(rawId);
-    if (!attrId || CONTROLLED_ATTR_IDS.has(attrId) || seen.has(attrId)) continue;
-    if (knownIds.size > 0 && !knownIds.has(attrId)) continue;
-    const attr = buildAttribute(attrId, value, dictionaryValueIds[String(attrId)]);
-    if (!attr) continue;
-    attrs.push(attr);
-    seen.add(attrId);
-  }
-
-  return attrs;
-}
-
-function buildAttributes(
-  baseItem: Record<string, unknown>,
-  form: DraftForm,
-  dynamicValues: Record<string, string>,
-  categoryAttributes: OzonCategoryAttribute[],
-  dictionaryValueIds: DictionaryValueIds,
-): Record<string, unknown>[] {
-  const customAttrs = parseCustomAttributes(form.customAttributes);
-  const dynamicAttrs = buildDynamicAttributes(dynamicValues, categoryAttributes, dictionaryValueIds);
-  const customIds = new Set(customAttrs.map((attr) => Number(attr.id)).filter(Boolean));
-  const dynamicIds = new Set(dynamicAttrs.map((attr) => Number(attr.id)).filter(Boolean));
-  const baseAttrs = Array.isArray(baseItem.attributes) ? baseItem.attributes : [];
-  const preserved = baseAttrs
-    .map(objectOf)
-    .filter((attr) => {
-      const attrId = Number(attr.id);
-      return attrId > 0 && !CONTROLLED_ATTR_IDS.has(attrId) && !customIds.has(attrId) && !dynamicIds.has(attrId);
-    });
-
-  const controlled = [
-    buildAttribute(ATTR_BRAND, form.brand, dictionaryValueIds[String(ATTR_BRAND)]),
-    buildAttribute(ATTR_MODEL, form.model),
-    buildAttribute(ATTR_WEIGHT, String(positiveInteger(form.weight))),
-    buildAttribute(ATTR_DESCRIPTION, form.description),
-    buildAttribute(ATTR_TAGS, normalizeTagsForPayload(form.tags)),
-  ].filter(Boolean) as Record<string, unknown>[];
-
-  return [...preserved, ...controlled, ...dynamicAttrs, ...customAttrs];
-}
-
-function firstItemOf(task: OzonListingTask): Record<string, unknown> {
-  return objectOf(task.draft?.items?.[0]);
-}
-
-function firstRowOf(task: OzonListingTask): Record<string, unknown> {
-  return objectOf(task.draft?.sourceRows?.[0]);
-}
-
-function createDraftForm(task: OzonListingTask): DraftForm {
-  const item = firstItemOf(task);
-  const row = firstRowOf(task);
-  const generated = objectOf(task.draft?.generated);
-  const matchedCategory = objectOf(generated.matched_category);
-  const tagsFromGenerated = Array.isArray(generated.tags) ? generated.tags.map(text).filter(Boolean).join('\n') : '';
-  const description = attributeValue(item, ATTR_DESCRIPTION) || text(generated.description_ru);
-  const model = attributeValue(item, ATTR_MODEL) || text(generated.model_name);
-  const tags = attributeValue(item, ATTR_TAGS) || tagsFromGenerated;
-  const sourceUnit = text(item.dimension_unit) || 'cm';
-
-  return {
-    name: text(item.name) || text(generated.title_ru) || text(row.product_title) || task.title || '',
-    offerId: text(item.offer_id) || task.offerId || text(row.offer_id),
-    barcode: text(item.barcode),
-    price: numberText(item.price || task.price || row.sku_price),
-    oldPrice: numberText(item.old_price || '0'),
-    currencyCode: text(item.currency_code) || 'CNY',
-    descriptionCategoryId: numberText(item.description_category_id || matchedCategory.description_category_id),
-    typeId: numberText(item.type_id || matchedCategory.type_id),
-    categoryPath: text(item._category_path) || text(matchedCategory.path),
-    brand: attributeValue(item, ATTR_BRAND) || 'NO NAME',
-    model,
-    description,
-    tags: formatTagsForUi(tags),
-    images: imageLinesFromItem(item, task),
-    dimensionUnit: 'mm',
-    depth: lengthToMillimeter(item.depth, sourceUnit),
-    width: lengthToMillimeter(item.width, sourceUnit),
-    height: lengthToMillimeter(item.height, sourceUnit),
-    weightUnit: text(item.weight_unit) || 'g',
-    weight: numberText(item.weight),
-    customAttributes: '',
-  };
-}
-
-function collectProductPageMissing(form: DraftForm): string[] {
-  const missing: string[] = [];
-  if (!form.categoryPath.trim() || !intForPayload(form.descriptionCategoryId) || !intForPayload(form.typeId)) missing.push('类目和类型');
-  if (!form.offerId.trim()) missing.push('货号');
-  if (Number(priceForPayload(form.price, '0')) <= 0) missing.push('价格');
-  if (!positiveInteger(form.depth)) missing.push('包装长度');
-  if (!positiveInteger(form.width)) missing.push('包装宽度');
-  if (!positiveInteger(form.height)) missing.push('包装高度');
-  if (!positiveInteger(form.weight)) missing.push('含包装重量');
-  return missing;
-}
-
-function isMediaAttributeName(attr: OzonCategoryAttribute): boolean {
-  const name = `${attr.name} ${attr.description} ${attr.groupName}`.toLowerCase();
-  return /video|rich|pdf|json|image|picture|видео|медиа|изображ|фото|富内容|视频|图片|封面|pdf/i.test(name);
-}
-
-function collectAttributeMissing(
-  form: DraftForm,
-  dynamicValues: Record<string, string>,
-  attrs: OzonCategoryAttribute[],
-): string[] {
-  const missing: string[] = [];
-  if (!form.model.trim()) missing.push('型号名称');
-  for (const attr of attrs) {
-    if (!attr.isRequired) continue;
-    if (!text(dynamicValues[String(attr.id)])) missing.push(attr.name || `属性 ${attr.id}`);
-  }
-  return unique(missing);
-}
-
-function collectPayloadMissing(
-  draft: OzonDraft,
-  items: Record<string, unknown>[],
-  attributeMissing: string[],
-): string[] {
-  const missing = new Set<string>(attributeMissing);
-  for (const item of items) {
-    if (!text(item.name)) missing.add('俄语标题');
-    if (!text(item.primary_image)) missing.add('主图');
-    if (!Number(item.description_category_id) || !Number(item.type_id)) missing.add('Ozon 类目');
-    if (!Number(item.price)) missing.add('价格');
-  }
-  return Array.from(missing);
-}
-
-function statusFromSubmitResponse(response: Record<string, unknown>): OzonListingTask['status'] {
-  const status = text(response.importStatus || response.status);
-  if (status === 'listing_ready') return 'listing_ready';
-  if (status === 'imported') return 'imported';
-  if (status === 'pending' || status === 'import_pending') return 'import_pending';
-  return 'imported';
-}
-
-function messageFromSubmitResponse(response: Record<string, unknown>): string {
-  const warnings = Array.isArray(response.warnings) ? response.warnings.map(text).filter(Boolean) : [];
-  const taskId = text(response.taskId);
-  const status = statusFromSubmitResponse(response);
-  const suffix = taskId ? `（Task ID: ${taskId}）` : '';
-
-  if (status === 'listing_ready') return `Ozon 已导入，价格和库存已更新${suffix}。`;
-  if (status === 'imported') {
-    return warnings.length
-      ? `Ozon 已导入，价格已更新；${warnings.join('；')}${suffix}。`
-      : `Ozon 已导入，价格已更新${suffix}。`;
-  }
-  return `Ozon 已接收导入任务，仍在等待导入结果${suffix}。`;
-}
-
-function buildDraft(
-  task: OzonListingTask,
-  form: DraftForm,
-  dynamicValues: Record<string, string>,
-  categoryAttributes: OzonCategoryAttribute[],
-  dictionaryValueIds: DictionaryValueIds,
-  requiredAttrs: OzonCategoryAttribute[],
-): DraftBuildResult | null {
-  if (!task.draft) return null;
-
-  const draft = task.draft;
-  const sourceItems = draft.items.length ? draft.items : [{}];
-  const baseFirst = objectOf(sourceItems[0]);
-  const images = lineList(form.images).map(normalizeImageUrl).filter(Boolean).slice(0, 15);
-  const descriptionCategoryId = intForPayload(form.descriptionCategoryId);
-  const typeId = intForPayload(form.typeId);
-  const attributes = buildAttributes(baseFirst, form, dynamicValues, categoryAttributes, dictionaryValueIds);
-
-  const firstItem: Record<string, unknown> = {
-    ...baseFirst,
-    name: form.name.trim().slice(0, 500),
-    barcode: form.barcode.trim(),
-    offer_id: form.offerId.trim().slice(0, 50),
-    price: priceForPayload(form.price, '1'),
-    old_price: priceForPayload(form.oldPrice, '0'),
-    currency_code: form.currencyCode.trim() || 'CNY',
-    description_category_id: descriptionCategoryId,
-    type_id: typeId,
-    images,
-    primary_image: images[0] || '',
-    dimension_unit: form.dimensionUnit || 'mm',
-    depth: positiveInteger(form.depth),
-    width: positiveInteger(form.width),
-    height: positiveInteger(form.height),
-    weight_unit: form.weightUnit || 'g',
-    weight: positiveInteger(form.weight),
-    attributes,
-    complex_attributes: Array.isArray(baseFirst.complex_attributes) ? baseFirst.complex_attributes : [],
-    _category_path: form.categoryPath.trim(),
-  };
-
-  const nextItems = sourceItems.map((rawItem, index) => {
-    if (index === 0) return firstItem;
-    const item = objectOf(rawItem);
-    return {
-      ...item,
-      currency_code: firstItem.currency_code,
-      description_category_id: firstItem.description_category_id,
-      type_id: firstItem.type_id,
-      attributes,
-      _category_path: firstItem._category_path,
-    };
-  });
-
-  const attributeMissing = collectAttributeMissing(form, dynamicValues, requiredAttrs);
-  const missing = collectPayloadMissing({ ...draft, items: nextItems }, nextItems, attributeMissing);
-  const tags = normalizeTagsForPayload(form.tags).split(/\r?\n/).filter(Boolean);
-  const estimatedDimensions = objectOf(draft.generated?.estimated_dimensions);
-  const lengthCm = form.dimensionUnit === 'mm' ? Number(firstItem.depth) / 10 : Number(firstItem.depth) || 0;
-  const widthCm = form.dimensionUnit === 'mm' ? Number(firstItem.width) / 10 : Number(firstItem.width) || 0;
-  const heightCm = form.dimensionUnit === 'mm' ? Number(firstItem.height) / 10 : Number(firstItem.height) || 0;
-  const generated = {
-    ...draft.generated,
-    title_ru: firstItem.name,
-    model_name: form.model.trim(),
-    description_ru: form.description.trim(),
-    tags,
-    matched_category: {
-      ...objectOf(draft.generated?.matched_category),
-      description_category_id: descriptionCategoryId,
-      type_id: typeId,
-      path: form.categoryPath.trim(),
-    },
-    estimated_dimensions: {
-      ...estimatedDimensions,
-      length_cm: Number.isFinite(lengthCm) ? lengthCm : 0,
-      width_cm: Number.isFinite(widthCm) ? widthCm : 0,
-      height_cm: Number.isFinite(heightCm) ? heightCm : 0,
-      weight_g: Number(firstItem.weight) || 0,
-    },
-  };
-
-  return {
-    draft: {
-      ...draft,
-      status: missing.length ? 'needs_review' : 'ready',
-      generated,
-      items: nextItems,
-      missing,
-    },
-    firstItem,
-    missing,
-  };
+function FieldError({ show, text: value }: { show: boolean; text: string }) {
+  if (!show) return null;
+  return <small className="ozon-attr-error-text">{value}</small>;
 }
 
 function sourceSummary(task: OzonListingTask): string {
-  const row = firstRowOf(task);
+  const row = objectOf(task.draft?.sourceRows?.[0]);
   return [
     task.offerId || text(row.offer_id),
     text(row.sku_name),
@@ -532,85 +83,27 @@ function draftStatusLabel(status: OzonListingTaskStatus): string {
   }
 }
 
-function variantOf(draft?: OzonDraft): Record<string, unknown> {
-  if (!draft) return {};
-  const generated = objectOf(draft.generated);
-  const root = objectOf(draft.variant);
-  return Object.keys(root).length ? root : objectOf(generated.variant_mapping);
+function statusFromSubmitResponse(response: Record<string, unknown>): OzonListingTask['status'] {
+  const status = text(response.importStatus || response.status);
+  if (status === 'listing_ready') return 'listing_ready';
+  if (status === 'imported') return 'imported';
+  if (status === 'pending' || status === 'import_pending') return 'import_pending';
+  return 'imported';
 }
 
-function variantRows(variant: Record<string, unknown>): Record<string, unknown>[] {
-  return Array.isArray(variant.variants) ? variant.variants.map(objectOf).filter(Boolean) : [];
-}
+function messageFromSubmitResponse(response: Record<string, unknown>): string {
+  const warnings = Array.isArray(response.warnings) ? response.warnings.map(text).filter(Boolean) : [];
+  const taskId = text(response.taskId);
+  const status = statusFromSubmitResponse(response);
+  const suffix = taskId ? `（Task ID: ${taskId}）` : '';
 
-function variantDimensions(variant: Record<string, unknown>): Record<string, unknown>[] {
-  return Array.isArray(variant.dimensions) ? variant.dimensions.map(objectOf).filter(Boolean) : [];
-}
-
-function variantImageListFromItem(item: Record<string, unknown>): string[] {
-  const images: string[] = [];
-  const primary = normalizeImageUrl(text(item.primary_image));
-  if (primary) images.push(primary);
-  const values = Array.isArray(item.images) ? item.images : [];
-  for (const value of values) {
-    const url = normalizeImageUrl(text(value));
-    if (url && !images.includes(url)) images.push(url);
+  if (status === 'listing_ready') return `Ozon 已导入，价格和库存已更新${suffix}。`;
+  if (status === 'imported') {
+    return warnings.length
+      ? `Ozon 已导入，价格已更新；${warnings.join('；')}${suffix}。`
+      : `Ozon 已导入，价格已更新${suffix}。`;
   }
-  return images.slice(0, 8);
-}
-
-function buildVariantTableView(
-  task: OzonListingTask,
-  draft: OzonDraft | undefined,
-  firstItem: Record<string, unknown>,
-): { rows: VariantRowView[]; dims: Record<string, unknown>[] } {
-  const variant = variantOf(draft);
-  const variantRowList = variantRows(variant);
-  const dims = variantDimensions(variant);
-  if (variantRowList.length) {
-    const items = Array.isArray(draft?.items) ? draft.items : [];
-    const rows = variantRowList.map((row, index) => {
-      const item = objectOf(items[Number(row.item_index) ?? index] ?? items[index]);
-      return {
-        key: `${text(row.offer_id) || `sku-${index}`}-${index}`,
-        skuName: text(row.source_sku_name) || text(item.name) || `SKU ${index + 1}`,
-        images: variantImageListFromItem({ primary_image: row.image || item.primary_image, images: item.images }),
-        offerId: text(row.offer_id),
-        price: text(row.price),
-        stock: text(row.stock),
-        values: objectOf(row.values),
-      };
-    });
-    return { rows, dims };
-  }
-
-  const row = firstRowOf(task);
-  const stock = text(firstItem.stock) || text(row.sku_stock) || text(row.stock) || text(row.available_stock);
-  return {
-    rows: [{
-      key: 'single-0',
-      skuName: text(firstItem.name) || 'SKU 1',
-      images: variantImageListFromItem(firstItem),
-      offerId: text(firstItem.offer_id),
-      price: text(firstItem.price),
-      stock,
-      values: {},
-    }],
-    dims: [],
-  };
-}
-
-function categoryDescriptionId(entry: OzonCategoryEntry): number {
-  return Number(entry.descriptionCategoryId || entry.description_category_id || 0);
-}
-
-function categoryTypeId(entry: OzonCategoryEntry): number {
-  return Number(entry.typeId || entry.type_id || 0);
-}
-
-function FieldError({ show, text: value }: { show: boolean; text: string }) {
-  if (!show) return null;
-  return <small className="ozon-attr-error-text">{value}</small>;
+  return `Ozon 已接收导入任务，仍在等待导入结果${suffix}。`;
 }
 
 function normalizeAttributeName(value: unknown): string {
@@ -952,17 +445,6 @@ function DictionaryAttributeField({
   );
 }
 
-type CategoryTreeViewNode = {
-  id: string;
-  label: string;
-  path: string;
-  depth: number;
-  descriptionCategoryId: number;
-  typeId: number;
-  selectable: boolean;
-  children: CategoryTreeViewNode[];
-};
-
 function rawTreeRoots(tree: unknown): OzonCategoryRawNode[] {
   if (!tree || typeof tree !== 'object') return [];
   const obj = tree as Record<string, unknown>;
@@ -1036,8 +518,19 @@ function isSelectableCategoryNode(node: CategoryTreeViewNode): boolean {
   return node.selectable;
 }
 
-export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onToast }: Props) {
-  const [form, setForm] = useState(() => createDraftForm(task));
+type ImageManagerSession = {
+  session: number;
+  itemIndex: number;
+  single: boolean;
+};
+
+export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onToast }: {
+  task: OzonListingTask;
+  onTaskUpdate?: (key: string, patch: OzonListingTaskPatch) => void;
+  onBackTo1688: () => void;
+  onToast?: (message: string) => void;
+}) {
+  const [form, setForm] = useState<DraftForm>(() => createDraftForm(task));
   const [message, setMessage] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [lastSavedAt, setLastSavedAt] = useState('');
@@ -1047,19 +540,24 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onTo
   const [attributesLoading, setAttributesLoading] = useState(false);
   const [attributesMessage, setAttributesMessage] = useState('尚未加载类目特征');
   const [attributeReloadKey, setAttributeReloadKey] = useState(0);
-  const [dynamicValues, setDynamicValues] = useState<Record<string, string>>(() => attributeValuesById(firstItemOf(task)));
+  const [dynamicValues, setDynamicValues] = useState<Record<string, string>>(() => attributeValuesOf(task));
   const [attemptedProduct, setAttemptedProduct] = useState(false);
   const [attemptedAttributes, setAttemptedAttributes] = useState(false);
   const [categoryTreeNodes, setCategoryTreeNodes] = useState<CategoryTreeViewNode[]>([]);
   const [categoryTreeLoading, setCategoryTreeLoading] = useState(false);
   const [categoryTreeMessage, setCategoryTreeMessage] = useState('');
   const [expandedCategoryIds, setExpandedCategoryIds] = useState<Record<string, boolean>>({});
-  const [dictionaryValueIds, setDictionaryValueIds] = useState<DictionaryValueIds>(() => attributeDictionaryIdsById(firstItemOf(task)));
+  const [dictionaryValueIds, setDictionaryValueIds] = useState<DictionaryValueIds>(() => attributeDictionaryIdsOf(task));
   const [showMoreAttributes, setShowMoreAttributes] = useState(false);
+  const [showAdvanced, setShowAdvanced] = useState(false);
   const [activeSection, setActiveSection] = useState<EditorSectionId>('main');
   const [categoryDrawerOpen, setCategoryDrawerOpen] = useState(false);
   const [pendingCategory, setPendingCategory] = useState<OzonCategoryEntry | null>(null);
+  const [validationState, setValidationState] = useState<ValidationState>('idle');
+  const [variantImageEdits, setVariantImageEdits] = useState<Record<string, string[]>>({});
+  const [imageManager, setImageManager] = useState<ImageManagerSession | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const categoryKeyRef = useRef('');
 
   const brandAttribute = useMemo(
     () => categoryAttributes.find((attr) => attr.id === ATTR_BRAND) || null,
@@ -1075,6 +573,43 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onTo
   const [dictionaryDisplayLabels, setDictionaryDisplayLabels] = useState<Record<string, string>>({});
   // Payload value mapping (attrId → { displayValue → payloadValue })
   const [dictionaryPayloadValues, setDictionaryPayloadValues] = useState<Record<string, Record<string, string>>>({});
+
+  function attributeValuesOf(currentTask: OzonListingTask): Record<string, string> {
+    const item = objectOf(currentTask.draft?.items?.[0]);
+    const values: Record<string, string> = {};
+    const attrs = Array.isArray(item.attributes) ? item.attributes : [];
+    for (const rawAttr of attrs) {
+      const attr = objectOf(rawAttr);
+      const attrId = Number(attr.id);
+      if (!attrId) continue;
+      const attrValues = Array.isArray(attr.values) ? attr.values : [];
+      const lines = attrValues
+        .map((value) => text(objectOf(value).value || objectOf(value).dictionary_value_id || value))
+        .filter(Boolean);
+      if (lines.length) values[String(attrId)] = lines.join('\n');
+    }
+    return values;
+  }
+
+  function attributeDictionaryIdsOf(currentTask: OzonListingTask): DictionaryValueIds {
+    const item = objectOf(currentTask.draft?.items?.[0]);
+    const values: DictionaryValueIds = {};
+    const attrs = Array.isArray(item.attributes) ? item.attributes : [];
+    for (const rawAttr of attrs) {
+      const attr = objectOf(rawAttr);
+      const attrId = Number(attr.id);
+      if (!attrId) continue;
+      const attrValues = Array.isArray(attr.values) ? attr.values : [];
+      for (const rawValue of attrValues) {
+        const value = objectOf(rawValue);
+        const label = text(value.value);
+        const dictionaryValueId = Number(value.dictionary_value_id || 0);
+        if (!label || dictionaryValueId <= 0) continue;
+        values[String(attrId)] = { ...(values[String(attrId)] || {}), [label]: dictionaryValueId };
+      }
+    }
+    return values;
+  }
 
   function dictionaryDisplayLabelForOption(attrId: number, option: OzonAttributeValue): string {
     const key = dictionaryDisplayKey(attrId, option.id, text(option.value));
@@ -1106,9 +641,13 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onTo
 
   const currentDraft = task.draft;
 
-  const variantOfDraft = useMemo(() => variantOf(currentDraft), [currentDraft]);
-  const variantRowsOfDraft = useMemo(() => variantRows(variantOfDraft), [variantOfDraft]);
-  const variantDimsOfDraft = useMemo(() => variantDimensions(variantOfDraft), [variantOfDraft]);
+  const variantOfDraft = useMemo(() => objectOf(currentDraft?.variant), [currentDraft]);
+  const variantRowsOfDraft = useMemo(() => {
+    return Array.isArray(variantOfDraft.variants) ? variantOfDraft.variants.map(objectOf).filter(Boolean) : [];
+  }, [variantOfDraft]);
+  const variantDimsOfDraft = useMemo(() => {
+    return Array.isArray(variantOfDraft.dimensions) ? variantOfDraft.dimensions.map(objectOf).filter(Boolean) : [];
+  }, [variantOfDraft]);
 
   const variantDimensionAttrIds = useMemo(() => {
     const ids = new Set<number>();
@@ -1120,17 +659,12 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onTo
   }, [variantDimsOfDraft]);
 
   const moreCategoryAttributes = useMemo(
-    () => categoryAttributes
-      .filter((attr) => !CONTROLLED_ATTR_IDS.has(attr.id))
-      .filter((attr) => !isMediaAttributeName(attr))
-      .filter((attr) => !variantDimensionAttrIds.has(attr.id)),
+    () => filterCategoryAttributesForMoreAttrs(categoryAttributes, variantDimensionAttrIds),
     [categoryAttributes, variantDimensionAttrIds],
   );
 
   const hiddenRequiredAttributes = useMemo(
-    () => moreCategoryAttributes.filter(
-      (attr) => attr.isRequired && !text(dynamicValues[String(attr.id)]),
-    ),
+    () => collectHiddenRequiredAttributes(moreCategoryAttributes, dynamicValues),
     [moreCategoryAttributes, dynamicValues],
   );
 
@@ -1226,7 +760,7 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onTo
   }
 
   async function fillCategoryAttributesByAi(forceFresh = false) {
-    if (attributeAiFilling) return;
+    if (attributeAiFilling || attributesLoading) return;
     const attrs = moreCategoryAttributes;
     if (!attrs.length) return;
 
@@ -1274,23 +808,28 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onTo
   }
 
   // Attribute values are pre-filled by the backend during generateOzonDraft.
-  // They come from draft.items[0].attributes via attributeValuesById on mount.
+  // They come from draft.items[0].attributes via attributeValuesOf on mount.
   // No auto AI fill on open — user clicks "AI 补全属性" button to fill gaps.
 
   useEffect(() => {
     const nextForm = createDraftForm(task);
     setForm(nextForm);
-    setDynamicValues(attributeValuesById(firstItemOf(task)));
-    setDictionaryValueIds(attributeDictionaryIdsById(firstItemOf(task)));
+    setDynamicValues(attributeValuesOf(task));
+    setDictionaryValueIds(attributeDictionaryIdsOf(task));
+    setDictionaryPayloadValues({});
     setCategoryAttributes([]);
     setMessage('');
     setShowMoreAttributes(false);
+    setShowAdvanced(false);
     setCategoryDrawerOpen(false);
     setPendingCategory(null);
     setAttemptedProduct(false);
     setAttemptedAttributes(false);
     setAttributeAiFilledKey('');
     setAttributeAiFilling(false);
+    setValidationState('idle');
+    setVariantImageEdits({});
+    setImageManager(null);
   }, [task.key, task.draftId]);
 
   useEffect(() => {
@@ -1348,26 +887,42 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onTo
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [brandAttribute?.dictionaryId, form.descriptionCategoryId, form.typeId]);
 
+  // Category attributes load with stale-state clearing + response race guard:
+  // the category key is captured per effect run and re-verified when the
+  // response arrives, so a slow A→B response can never overwrite a newer C.
   useEffect(() => {
     const descriptionCategoryId = intForPayload(form.descriptionCategoryId);
     const typeId = intForPayload(form.typeId);
+    const categoryKey = `${descriptionCategoryId}:${typeId}`;
+    categoryKeyRef.current = categoryKey;
+
     if (!descriptionCategoryId || !typeId) {
       setCategoryAttributes([]);
       setAttributesMessage('请选择 Ozon 类目和类型后加载特征。');
+      setAttributesLoading(false);
       return;
     }
 
     let alive = true;
     setAttributesLoading(true);
+    setCategoryAttributes([]);
     setAttributesMessage('正在加载类目特征...');
+    setShowMoreAttributes(false);
+    setAttemptedAttributes(false);
     getApi().ozon.getCategoryAttributes({ descriptionCategoryId, typeId, language: 'ZH_HANS' })
       .then((response) => {
         if (!alive) return;
-        setCategoryAttributes(response.attributes || []);
-        setAttributesMessage(`已加载 ${response.attributes.length} 项类目特征，其中必填 ${response.requiredCount} 项`);
+        if (categoryKeyRef.current !== categoryKey) return;
+        const attrs = response.attributes || [];
+        setCategoryAttributes(attrs);
+        setDynamicValues((prev) => pruneDynamicValuesForCategory(prev, attrs));
+        setDictionaryValueIds((prev) => pruneDictionaryIdsForCategory(prev, attrs));
+        setDictionaryPayloadValues((prev) => prunePayloadValuesForCategory(prev, attrs));
+        setAttributesMessage(`已加载 ${attrs.length} 项类目特征，其中必填 ${response.requiredCount} 项`);
       })
       .catch((error) => {
         if (!alive) return;
+        if (categoryKeyRef.current !== categoryKey) return;
         setCategoryAttributes([]);
         setAttributesMessage(error instanceof Error ? error.message : String(error));
       })
@@ -1377,6 +932,36 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onTo
 
     return () => { alive = false; };
   }, [attributeReloadKey, form.descriptionCategoryId, form.typeId]);
+
+  function pruneDictionaryIdsForCategory(
+    values: DictionaryValueIds,
+    attrs: OzonCategoryAttribute[],
+  ): DictionaryValueIds {
+    const categoryIds = new Set(attrs.map((attr) => attr.id));
+    const next: DictionaryValueIds = {};
+    for (const [rawId, ids] of Object.entries(values)) {
+      const attrId = Number(rawId);
+      if (!attrId || CONTROLLED_ATTR_IDS.has(attrId) || categoryIds.has(attrId)) {
+        next[rawId] = ids;
+      }
+    }
+    return next;
+  }
+
+  function prunePayloadValuesForCategory(
+    values: Record<string, Record<string, string>>,
+    attrs: OzonCategoryAttribute[],
+  ): Record<string, Record<string, string>> {
+    const categoryIds = new Set(attrs.map((attr) => attr.id));
+    const next: Record<string, Record<string, string>> = {};
+    for (const [rawId, map] of Object.entries(values)) {
+      const attrId = Number(rawId);
+      if (!attrId || CONTROLLED_ATTR_IDS.has(attrId) || categoryIds.has(attrId)) {
+        next[rawId] = map;
+      }
+    }
+    return next;
+  }
 
   // Scroll spy: keep the right-hand nav in sync with the editor scroll container.
   useEffect(() => {
@@ -1413,43 +998,54 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onTo
     [moreCategoryAttributes, dynamicValues, form],
   );
   const buildResult = useMemo(
-    () => buildDraft(task, form, dynamicValues, categoryAttributes, dictionaryValueIds, moreCategoryAttributes),
-    [categoryAttributes, dictionaryValueIds, dynamicValues, form, moreCategoryAttributes, task],
+    () => buildDraft(task, form, dynamicValues, categoryAttributes, dictionaryValueIds, moreCategoryAttributes, variantImageEdits),
+    [categoryAttributes, dictionaryValueIds, dynamicValues, form, moreCategoryAttributes, task, variantImageEdits],
   );
   const missing = buildResult?.missing || task.missingFields || task.draft?.missing || [];
   const firstItem = buildResult?.firstItem || firstItemOf(task);
-  const canSubmit = Boolean(buildResult?.draft) && missing.length === 0 && !submitting;
-  const validationState: ValidationState =
-    submitting ? 'validating'
-      : !buildResult?.draft ? 'invalid'
-        : missing.length === 0 ? 'valid'
-          : 'invalid';
+  const variantsMissing = useMemo(
+    () => collectVariantViewMissing(buildResult?.draft?.items || task.draft?.items || [], buildResult?.draft || task.draft),
+    [buildResult?.draft, task.draft],
+  );
+  const canSubmit = Boolean(buildResult?.draft) && missing.length === 0 && !submitting && !attributesLoading;
 
   const missingCounts = {
     main: productMissing.length,
     attributes: attributeMissing.length,
-    variants: 0,
+    variants: variantsMissing.length,
   };
 
   const variantTable = useMemo(
-    () => buildVariantTableView(task, buildResult?.draft || task.draft, firstItem),
-    [buildResult?.draft, firstItem, task],
+    () => buildVariantTableView(task, buildResult?.draft || task.draft, firstItem, variantImageEdits),
+    [buildResult?.draft, firstItem, task, variantImageEdits],
   );
   const visibleVariantDims = variantTable.dims.filter((dim) => dim.distinguishes_variants === true);
 
+  function markEdited() {
+    setValidationState((prev) => (prev === 'valid' ? 'idle' : prev));
+  }
+
   function updateField<K extends keyof DraftForm>(key: K, value: DraftForm[K]) {
+    markEdited();
     setForm((prev) => ({ ...prev, [key]: value }));
   }
 
   function updateDynamicValue(attrId: number, value: string) {
+    markEdited();
     setDynamicValues((prev) => ({ ...prev, [String(attrId)]: value }));
   }
 
   function updateDictionaryValueIds(attrId: number, values: Record<string, number>) {
+    markEdited();
     setDictionaryValueIds((prev) => ({ ...prev, [String(attrId)]: values }));
   }
 
   function applyCategory(entry: OzonCategoryEntry) {
+    setValidationState('idle');
+    setAttemptedAttributes(false);
+    setCategoryAttributes([]);
+    setShowMoreAttributes(false);
+    setAttributesMessage('正在加载类目特征...');
     setForm((prev) => ({
       ...prev,
       descriptionCategoryId: String(categoryDescriptionId(entry)),
@@ -1493,7 +1089,7 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onTo
   }
 
   function applyDraft(showToast = true): DraftBuildResult | null {
-    const result = buildDraft(task, form, dynamicValues, categoryAttributes, dictionaryValueIds, moreCategoryAttributes);
+    const result = buildDraft(task, form, dynamicValues, categoryAttributes, dictionaryValueIds, moreCategoryAttributes, variantImageEdits);
     if (!result) {
       setMessage('当前任务还没有可编辑的 Ozon 草稿。');
       return null;
@@ -1521,8 +1117,13 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onTo
   function handleValidate() {
     setAttemptedProduct(true);
     setAttemptedAttributes(true);
+    setValidationState('validating');
     const result = applyDraft(false);
-    if (!result) return;
+    if (!result) {
+      setValidationState('invalid');
+      return;
+    }
+    setValidationState(result.missing.length ? 'invalid' : 'valid');
     if (result.missing.length) {
       onToast?.(`校验未通过：${formatMissingFields(result.missing)}`);
     } else {
@@ -1536,6 +1137,7 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onTo
     const result = applyDraft(false);
     if (!result) return;
     if (result.missing.length) {
+      setValidationState('invalid');
       setMessage(`提交前还需要补充：${formatMissingFields(result.missing)}`);
       return;
     }
@@ -1578,6 +1180,42 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onTo
     } finally {
       setSubmitting(false);
     }
+  }
+
+  function fullItemImages(item: Record<string, unknown>): string[] {
+    const images: string[] = [];
+    const primary = normalizeImageUrl(text(item.primary_image));
+    if (primary) images.push(primary);
+    for (const value of Array.isArray(item.images) ? item.images : []) {
+      const url = normalizeImageUrl(text(value));
+      if (url && !images.includes(url)) images.push(url);
+    }
+    return images.slice(0, 15);
+  }
+
+  function openImageManager(row: VariantRowView) {
+    const single = variantRowsOfDraft.length === 0;
+    setImageManager({ session: Date.now(), itemIndex: row.itemIndex, single });
+  }
+
+  function imageManagerImages(): string[] {
+    if (!imageManager) return [];
+    if (imageManager.single) return lineList(form.images);
+    const item = objectOf((buildResult?.draft?.items || task.draft?.items || [])[imageManager.itemIndex]);
+    return variantImageEdits[String(imageManager.itemIndex)] || fullItemImages(item);
+  }
+
+  function saveImageManagerImages(nextImages: string[]) {
+    if (!imageManager) return;
+    const saved = nextImages.slice(0, 15);
+    if (imageManager.single) {
+      updateField('images', saved.join('\n'));
+    } else {
+      markEdited();
+      setVariantImageEdits((prev) => ({ ...prev, [String(imageManager.itemIndex)]: saved }));
+      setMessage(`SKU ${imageManager.itemIndex + 1} 图片已更新，保存草稿后生效。`);
+    }
+    setImageManager(null);
   }
 
   if (!task.draft) {
@@ -1856,6 +1494,50 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onTo
                   </div>
                 </div>
               )}
+
+              <div className="ozon-advanced-block">
+                <button
+                  type="button"
+                  className="ozon-advanced-toggle"
+                  onClick={() => setShowAdvanced((value) => !value)}
+                >
+                  <span className="ozon-more-attrs-arrow">{showAdvanced ? '↑' : '↓'}</span> 高级属性
+                </button>
+                {showAdvanced && (
+                  <div className="ozon-other-attr-grid">
+                    <div className="ozon-other-attr-item">
+                      <label className="ozon-attr-label ozon-other-attr-label">
+                        Rich Content（JSON）
+                        <span className="unit-warning">可选；草稿原有 Rich Content 会随保存保留</span>
+                      </label>
+                      <div className="ozon-attr-control ozon-other-attr-control">
+                        <textarea
+                          value={form.richContent}
+                          onChange={(event) => updateField('richContent', event.target.value)}
+                          rows={6}
+                          style={{ fontFamily: 'monospace', fontSize: 12 }}
+                          placeholder='可选，Rich Content JSON 数据，例如 [{"type":"image","data":{"url":"..."}}]'
+                        />
+                      </div>
+                    </div>
+                    <div className="ozon-other-attr-item">
+                      <label className="ozon-attr-label ozon-other-attr-label">
+                        自定义属性（属性ID=值）
+                        <span className="unit-warning">高级模式；每行一个，例如 85=NO NAME</span>
+                      </label>
+                      <div className="ozon-attr-control ozon-other-attr-control">
+                        <textarea
+                          value={form.customAttributes}
+                          onChange={(event) => updateField('customAttributes', event.target.value)}
+                          rows={5}
+                          style={{ fontFamily: 'monospace', fontSize: 12 }}
+                          placeholder={'85=NO NAME\n12345=示例值\n一行一个，属性ID=值'}
+                        />
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
             </section>
 
             <section id="ozon-section-variants" className="ozon-form-card">
@@ -1863,7 +1545,7 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onTo
                 <span>变体设置</span>
                 <div className="ozon-variant-header-meta">
                   <span>{variantTable.rows.length} 个 SKU</span>
-                  <small>{variantRowsOfDraft.length > 0 ? '来自 1688 SKU 规格解析' : '商品级主图已带入首行'}</small>
+                  <small>{variantRowsOfDraft.length > 0 ? '来自 1688 SKU 规格解析；点击图片可管理（删除/排序/主图）' : '商品级主图已带入首行；点击图片可管理'}</small>
                 </div>
               </div>
 
@@ -1888,20 +1570,20 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onTo
                         <td className="col-idx">{index + 1}</td>
                         <td className="col-sku-name">{row.skuName}</td>
                         <td className="col-images">
-                          <div className="variant-img-list" title="变体图片（只读预览）">
+                          <button type="button" className="variant-img-list clickable" title="点击管理图片" onClick={() => openImageManager(row)}>
                             {row.images.length ? (
                               row.images.slice(0, 3).map((img, ii) => (
-                                <div key={ii} className="variant-img-item">
+                                <span key={ii} className="variant-img-item">
                                   <img src={img} alt="" />
                                   {ii === 2 && row.images.length > 3 && (
-                                    <div className="variant-img-overlay">+{row.images.length - 3}</div>
+                                    <span className="variant-img-overlay">+{row.images.length - 3}</span>
                                   )}
-                                </div>
+                                </span>
                               ))
                             ) : (
-                              <div className="variant-img-placeholder">暂无图片</div>
+                              <span className="variant-img-placeholder">添加图片</span>
                             )}
-                          </div>
+                          </button>
                         </td>
                         <td className="col-offer-id">{row.offerId || '—'}</td>
                         <td className="col-price">{row.price || '—'}</td>
@@ -1918,7 +1600,6 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onTo
               {visibleVariantDims.length > 0 && (
                 <div className="ozon-variant-dims-hint">
                   变体维度：{visibleVariantDims.map((dim) => text(dim.source_name)).join(' / ')}
-                  {variantRowsOfDraft.some((row) => Number(objectOf(row).status) > 0) ? '' : ''}
                 </div>
               )}
             </section>
@@ -1941,6 +1622,7 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onTo
         validationState={validationState}
         lastSavedAt={lastSavedAt}
         aiFilling={attributeAiFilling}
+        attributesLoading={attributesLoading}
         onSave={() => applyDraft(true)}
         onValidate={handleValidate}
         onSubmit={submitDraft}
@@ -1973,6 +1655,17 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onTo
         }}
         onSyncTree={() => loadCategoryTree(true)}
       />
+
+      {imageManager && (
+        <OzonImageManager
+          key={imageManager.session}
+          open
+          title={imageManager.single ? '管理商品图片（主图=第一张）' : `管理 SKU ${imageManager.itemIndex + 1} 图片（主图=第一张）`}
+          images={imageManagerImages()}
+          onCancel={() => setImageManager(null)}
+          onSave={saveImageManagerImages}
+        />
+      )}
     </div>
   );
 }

@@ -1,17 +1,8 @@
 import React from 'react';
 import { createPortal } from 'react-dom';
 import type { OzonCategoryEntry } from '../../services/api';
-
-interface CategoryTreeViewNode {
-  id: string;
-  label: string;
-  path: string;
-  depth: number;
-  descriptionCategoryId: number;
-  typeId: number;
-  selectable: boolean;
-  children: CategoryTreeViewNode[];
-}
+import { filterTreeNodes, collectRequiredExpandedIds } from './ozonEditorUtils';
+import type { CategoryTreeViewNode } from './ozonEditorUtils';
 
 interface Props {
   open: boolean;
@@ -31,20 +22,7 @@ interface Props {
 }
 
 function filterTree(nodes: CategoryTreeViewNode[], q: string): CategoryTreeViewNode[] {
-  if (!q.trim()) return nodes;
-  const tokens = q.trim().toLowerCase().split(/\s+/).filter(Boolean);
-  const result: CategoryTreeViewNode[] = [];
-  for (const node of nodes) {
-    const children = filterTree(node.children, q);
-    const selfMatch = tokens.every((t) =>
-      [node.label, node.path, String(node.descriptionCategoryId), String(node.typeId)]
-        .join(' ').toLowerCase().includes(t),
-    );
-    if (selfMatch || children.length) {
-      result.push({ ...node, children });
-    }
-  }
-  return result;
+  return filterTreeNodes(nodes, q);
 }
 
 function CategoryNodeRow({ node, expandedIds, onToggleExpand, onSelectNode, level }: {
@@ -85,6 +63,10 @@ export default function OzonCategoryDrawer({
   if (!open) return null;
 
   const visible = filterTree(treeNodes, query);
+  const searching = Boolean(query.trim());
+  const effectiveExpanded = searching
+    ? { ...expandedIds, ...collectRequiredExpandedIds(visible) }
+    : expandedIds;
 
   return createPortal(
     <div className="ozon-category-drawer-backdrop" role="dialog" aria-modal="true" aria-labelledby="ozon-cat-drawer-title"
@@ -114,7 +96,7 @@ export default function OzonCategoryDrawer({
           ) : (
             visible.map((node) => (
               <CategoryNodeRow key={node.id} node={node}
-                expandedIds={expandedIds}
+                expandedIds={effectiveExpanded}
                 onToggleExpand={onToggleExpand}
                 onSelectNode={onSelectNode} level={0} />
             ))
