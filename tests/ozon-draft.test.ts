@@ -106,6 +106,16 @@ function aiDraftResponse(overrides: Record<string, unknown> = {}) {
   }) as Response;
 }
 
+function categoryMeta(attrs: Array<Record<string, unknown>>) {
+  return ok({ result: attrs }) as Response;
+}
+
+function aiSuggestionsResponse(attributes: Array<Record<string, unknown>>) {
+  return okJson({
+    choices: [{ message: { content: JSON.stringify({ attributes }) } }],
+  }) as Response;
+}
+
 beforeEach(() => {
   vi.stubGlobal('fetch', vi.fn());
 });
@@ -352,5 +362,143 @@ describe('ozon draft submit helper', () => {
     });
 
     expect(missing).toContain('规格属性映射');
+  });
+
+  describe('required-only autofill (TEST-01..03)', () => {
+    async function categoryTreeDir(): Promise<string> {
+      const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'desktop-autofill-'));
+      await fs.mkdir(path.join(tempDir, 'categories'), { recursive: true });
+      await fs.writeFile(path.join(tempDir, 'categories', 'ozon_category_tree.zh_hans.json'), JSON.stringify({
+        result: [{
+          description_category_id: 1700,
+          category_name: '手机配件',
+          children: [{
+            description_category_id: 1700,
+            category_name: '保护配件',
+            children: [{
+              description_category_id: 1700,
+              type_id: 9300,
+              type_name: '手机壳',
+              children: [],
+            }],
+          }],
+        }],
+      }), 'utf8');
+      await fs.writeFile(path.join(tempDir, 'ozon_settings.json'), JSON.stringify({
+        ai: { provider: 'deepseek', baseUrl: 'https://api.example.test', model: 'model', apiKey: 'ai-key' },
+        ozon: { clientId: 'client', apiKey: 'key', currencyCode: 'CNY' },
+      }), 'utf8');
+      return tempDir;
+    }
+
+    function autofillSettings(userDataPath: string) {
+      return {
+        ai: { apiKey: 'ai-key', baseUrl: 'https://api.example.test', model: 'model' },
+        ozon: { clientId: 'client', apiKey: 'key', currencyCode: 'CNY' },
+        userDataPath,
+      };
+    }
+
+    function autofillSourceRow(attrs: Record<string, string>) {
+      return {
+        offer_id: '1688-offer',
+        sku_id: 'sku-1',
+        search_keyword: '手机壳',
+        product_title: '透明手机保护壳',
+        sku_name: '颜色:透明',
+        sku_price: '13',
+        main_image_url: 'https://example.com/case.jpg',
+        length_cm: '18',
+        width_cm: '9',
+        height_cm: '2',
+        weight_g: '120',
+        sku_stock: 10,
+        ...(Object.keys(attrs).length ? { product_attributes_structured: attrs } : {}),
+      };
+    }
+
+    it('autofills only required attrs via builtin mapping and keeps full metadata (TEST-01)', async () => {
+      const tempDir = await categoryTreeDir();
+      try {
+        const fetchMock = vi.mocked(fetch);
+        const meta = categoryMeta([
+          { id: 100, name: '材质', is_required: true },
+          { id: 200, name: '颜色', is_required: false },
+        ]);
+        fetchMock
+          .mockResolvedValueOnce(aiDraftResponse())
+          .mockResolvedValueOnce(meta)
+          .mockResolvedValueOnce(meta);
+
+        const draft = await generateOzonDraft(autofillSettings(tempDir), [autofillSourceRow({ 材质: '棉', 颜色: '红色' })]);
+
+        const ids = (draft.generated.attribute_values || []).map((v) => Number(v.attribute_id));
+        expect(ids).toContain(100);
+        expect(ids).not.toContain(200);
+        const metaIds = (draft.generated._category_attributes || []).map((a) => Number(a.id));
+        expect(metaIds).toEqual(expect.arrayContaining([100, 200]));
+      } finally {
+        await fs.rm(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    it('does not generate optional values even with a perfect builtin match (TEST-02)', async () => {
+      const tempDir = await categoryTreeDir();
+      try {
+        const fetchMock = vi.mocked(fetch);
+        const meta = categoryMeta([{ id: 200, name: '颜色', is_required: false }]);
+        fetchMock
+          .mockResolvedValueOnce(aiDraftResponse())
+          .mockResolvedValueOnce(meta)
+          .mockResolvedValueOnce(meta);
+
+        const draft = await generateOzonDraft(autofillSettings(tempDir), [autofillSourceRow({ 颜色: '红色' })]);
+
+        expect(draft.generated.attribute_values || []).toHaveLength(0);
+        const metaIds = (draft.generated._category_attributes || []).map((a) => Number(a.id));
+        expect(metaIds).toEqual([200]);
+      } finally {
+        await fs.rm(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    it('sends only required attrs to AI and drops optional IDs from responses (TEST-03)', async () => {
+      const tempDir = await categoryTreeDir();
+      try {
+        const fetchMock = vi.mocked(fetch);
+        const meta = categoryMeta([
+          { id: 100, name: '材质', is_required: true },
+          { id: 200, name: '颜色', is_required: false },
+          { id: 300, name: '尺码', is_required: true },
+        ]);
+        fetchMock
+          .mockResolvedValueOnce(aiDraftResponse())
+          .mockResolvedValueOnce(meta)
+          .mockResolvedValueOnce(aiSuggestionsResponse([
+            { attribute_id: 100, value_text: '棉' },
+            { attribute_id: 300, value_text: 'M' },
+            { attribute_id: 200, value_text: '偷渡' },
+          ]))
+          .mockResolvedValueOnce(meta);
+
+        const draft = await generateOzonDraft(autofillSettings(tempDir), [autofillSourceRow({ 款式: '圆领', 颜色: '红色' })]);
+
+        const promptCall = fetchMock.mock.calls.find((call) =>
+          String((call[1] as RequestInit).body || '').includes('suggest_ozon_category_attribute_values_from_1688_product'),
+        );
+        expect(promptCall).toBeTruthy();
+        const promptBody = JSON.parse(String((promptCall![1] as RequestInit).body || '{}'));
+        const userPayload = JSON.parse(promptBody.messages[1].content);
+        const promptIds = userPayload.attributes.map((a: { id: number }) => Number(a.id));
+        expect(promptIds).toEqual([100, 300]);
+        expect(promptIds).not.toContain(200);
+
+        const ids = (draft.generated.attribute_values || []).map((v) => Number(v.attribute_id));
+        expect(ids).toEqual(expect.arrayContaining([100, 300]));
+        expect(ids).not.toContain(200);
+      } finally {
+        await fs.rm(tempDir, { recursive: true, force: true });
+      }
+    });
   });
 });

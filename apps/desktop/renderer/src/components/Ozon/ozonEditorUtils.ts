@@ -572,6 +572,50 @@ export function collectHiddenRequiredAttributes(
 }
 
 /**
+ * Autofill-target split: full category metadata stays in
+ * `filterCategoryAttributesForMoreAttrs` (UI/manual entry), while every
+ * automatic fill path (builtin, AI, defaults, historical prefill) may only
+ * touch REQUIRED dynamic attributes.
+ */
+export function filterRequiredOnlyAttributes(attrs: OzonCategoryAttribute[]): OzonCategoryAttribute[] {
+  return attrs.filter((attr) => attr.isRequired === true);
+}
+
+/**
+ * Fresh AI target = required AND currently missing. Filled required values
+ * are never re-sent or overwritten; optional attributes never participate.
+ */
+export function filterMissingRequiredAttributes(
+  attrs: OzonCategoryAttribute[],
+  dynamicValues: Record<string, string>,
+): OzonCategoryAttribute[] {
+  return filterRequiredOnlyAttributes(attrs).filter((attr) => !text(dynamicValues[String(attr.id)]));
+}
+
+export type OzonPrefillValue = {
+  attribute_id: number;
+  value_text: string;
+  dictionary_value_id?: number;
+};
+
+/**
+ * Historical generated.attribute_values may come from old drafts that also
+ * contain optional values. Only values whose attribute_id is a required
+ * autofill target and that are still empty may be re-applied.
+ */
+export function resolvePrefillableAttributeValues(
+  values: OzonPrefillValue[],
+  requiredAttrIds: ReadonlySet<number>,
+  dynamicValues: Record<string, string>,
+): OzonPrefillValue[] {
+  return values.filter(
+    (value) =>
+      requiredAttrIds.has(Number(value.attribute_id)) &&
+      !text(dynamicValues[String(value.attribute_id)]),
+  );
+}
+
+/**
  * Drop dynamic attribute values that no longer belong to the current
  * category. Controlled attributes (brand/model/description/tags/weight/
  * rich content/product name) are never dropped.

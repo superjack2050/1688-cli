@@ -28,6 +28,8 @@ import {
   createDraftForm,
   createImageManagerSession,
   filterCategoryAttributesForMoreAttrs,
+  filterMissingRequiredAttributes,
+  filterRequiredOnlyAttributes,
   firstItemOf,
   intForPayload,
   lineList,
@@ -36,6 +38,7 @@ import {
   objectOf,
   parseCustomAttributesDetailed,
   pruneDynamicValuesForCategory,
+  resolvePrefillableAttributeValues,
   text,
   validationSectionLabel,
   type AttributeLoadState,
@@ -719,6 +722,17 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onCl
     [categoryAttributes, variantDimensionAttrIds],
   );
 
+  // Autofill split: the UI keeps rendering the FULL moreCategoryAttributes;
+  // AI 补全 may only target required dynamic attributes.
+  const requiredAiAttributes = useMemo(
+    () => filterRequiredOnlyAttributes(moreCategoryAttributes),
+    [moreCategoryAttributes],
+  );
+  const missingRequiredAiAttributes = useMemo(
+    () => filterMissingRequiredAttributes(requiredAiAttributes, dynamicValues),
+    [requiredAiAttributes, dynamicValues],
+  );
+
   const hiddenRequiredAttributes = useMemo(
     () => collectHiddenRequiredAttributes(moreCategoryAttributes, dynamicValues),
     [moreCategoryAttributes, dynamicValues],
@@ -821,23 +835,32 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onCl
       setMessage(attributeLoadState === 'error' ? 'Ozon 类目属性加载失败，无法执行 AI 补全。' : '类目属性尚未加载完成，无法执行 AI 补全。');
       return;
     }
-    const attrs = moreCategoryAttributes;
-    if (!attrs.length) return;
+    // AI target = required AND currently missing. Optional attributes never
+    // participate; filled required values are never re-sent.
+    const attrs = missingRequiredAiAttributes;
+    if (!attrs.length) {
+      setMessage('当前必填类目属性已填写完成。');
+      return;
+    }
 
     setAttributeAiFilledKey(attributeAutoFillKey);
     setAttributeAiFilling(true);
 
-    // Pre-filled by the draft generation backend — apply immediately
+    // Pre-filled by the draft generation backend — apply immediately.
+    // Historical drafts may contain optional values: filter to required IDs
+    // only, and never overwrite what the user already filled.
     const prefillValues = task.draft?.generated &&
       typeof task.draft.generated === 'object' &&
       (task.draft.generated as Record<string, unknown>).attribute_values;
     const values = Array.isArray(prefillValues) ? prefillValues : [];
+    const requiredAiAttributeIds = new Set(requiredAiAttributes.map((attr) => Number(attr.id)));
+    const requiredPrefillValues = resolvePrefillableAttributeValues(values, requiredAiAttributeIds, dynamicValues);
 
-    if (values.length && !forceFresh) {
+    if (requiredPrefillValues.length && !forceFresh) {
       setMessage('草稿已附带特征值，正在应用...');
       try {
         await applyDefaultOriginCountry(attrs);
-        applyPrefilledAttributeValues(values);
+        applyPrefilledAttributeValues(requiredPrefillValues);
         setMessage('AI 已尝试填写类目特征，请检查字典项是否正确。');
       } catch (error) {
         setMessage(error instanceof Error ? error.message : String(error));

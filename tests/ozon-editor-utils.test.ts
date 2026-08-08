@@ -24,6 +24,8 @@ import {
   createImageManagerSession,
   deriveEditorActions,
   filterCategoryAttributesForMoreAttrs,
+  filterMissingRequiredAttributes,
+  filterRequiredOnlyAttributes,
   filterTreeNodes,
   isChineseTextViolationMessage,
   isMediaAttributeName,
@@ -38,6 +40,7 @@ import {
   positiveInteger,
   pruneDynamicValuesForCategory,
   resolveVariantItemIndex,
+  resolvePrefillableAttributeValues,
   validateDraftForEditor,
   validationSectionLabel,
 } from '../apps/desktop/renderer/src/components/Ozon/ozonEditorUtils';
@@ -1074,6 +1077,52 @@ describe('ozon editor utils', () => {
       expect(validationSectionLabel('main')).toBe('主要信息');
       expect(validationSectionLabel('attributes')).toBe('产品属性');
       expect(validationSectionLabel('variants')).toBe('变体设置');
+    });
+  });
+
+  describe('required-only autofill split (TEST-04..08)', () => {
+    it('fresh AI target is exactly missing required (TEST-04)', () => {
+      const attrs = [catAttr(100, '材质', 0, true), catAttr(200, '季节', 0, true), catAttr(300, '风格', 0, false)];
+      const missing = filterMissingRequiredAttributes(attrs, { '100': '棉', '200': '', '300': '' });
+      expect(missing.map((attr) => attr.id)).toEqual([200]);
+    });
+
+    it('never re-targets or overwrites an already-filled required (TEST-05)', () => {
+      const attrs = [catAttr(100, '材质', 0, true)];
+      const missing = filterMissingRequiredAttributes(attrs, { '100': 'manual' });
+      expect(missing).toEqual([]);
+      const prefill = resolvePrefillableAttributeValues(
+        [{ attribute_id: 100, value_text: 'AI' }],
+        new Set([100]),
+        { '100': 'manual' },
+      );
+      expect(prefill).toEqual([]);
+    });
+
+    it('optional manual values are untouched by every autofill filter (TEST-06)', () => {
+      const attrs = [catAttr(100, '材质', 0, true), catAttr(300, '风格', 0, false)];
+      const required = filterRequiredOnlyAttributes(attrs);
+      expect(required.map((attr) => attr.id)).toEqual([100]);
+      const missing = filterMissingRequiredAttributes(attrs, { '100': '', '300': 'manual optional' });
+      expect(missing.map((attr) => attr.id)).toEqual([100]);
+      const values = { '300': 'manual optional' };
+      filterMissingRequiredAttributes(attrs, values);
+      expect(values).toEqual({ '300': 'manual optional' });
+    });
+
+    it('historical prefill applies only required ids (TEST-07)', () => {
+      const prefill = [
+        { attribute_id: 100, value_text: 'required value' },
+        { attribute_id: 300, value_text: 'optional old value' },
+      ];
+      const applied = resolvePrefillableAttributeValues(prefill, new Set([100]), {});
+      expect(applied).toEqual([{ attribute_id: 100, value_text: 'required value' }]);
+    });
+
+    it('no missing required means no AI target (TEST-08)', () => {
+      const attrs = [catAttr(100, '材质', 0, true), catAttr(200, '季节', 0, true), catAttr(300, '风格', 0, false)];
+      const missing = filterMissingRequiredAttributes(attrs, { '100': 'x', '200': 'y', '300': '' });
+      expect(missing).toEqual([]);
     });
   });
 });

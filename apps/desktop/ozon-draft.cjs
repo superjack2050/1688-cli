@@ -1442,9 +1442,18 @@ async function fillCategoryAttributes(settings, sourceRows, normalized) {
       typeId,
       language: 'ZH_HANS',
     });
-    const attrs = visibleDraftCategoryAttributes(catAttrs.attributes || []);
-    log(`step 1 done: ${attrs.length} attrs (non-aspect)`);
-    if (!attrs.length) { log('SKIP: no attributes'); return; }
+    const visibleAttrs = visibleDraftCategoryAttributes(catAttrs.attributes || []);
+    const requiredFillAttrs = visibleAttrs.filter((attr) => attr.isRequired === true);
+    log(`step 1 done: ${visibleAttrs.length} visible attrs, ${requiredFillAttrs.length} required autofill targets`);
+    if (!visibleAttrs.length) { log('SKIP: no attributes'); return; }
+    if (!requiredFillAttrs.length) {
+      // Metadata must never shrink to required-only: keep the full list even
+      // when there is nothing to autofill.
+      normalized.attribute_values = [];
+      normalized._category_attributes = visibleAttrs;
+      log('SKIP: no required attributes to autofill; full metadata kept');
+      return;
+    }
 
     // 2. Pre-match using built-in mapping table (source 1688 attrs → Ozon attrs)
     log('step 2a: builtin attr mapping...');
@@ -1457,17 +1466,21 @@ async function fillCategoryAttributes(settings, sourceRows, normalized) {
     }
     const builtinHits = [];
     const builtinMatchedIds = new Set();
-    for (const attr of attrs) {
+    for (const attr of requiredFillAttrs) {
       const val = matchOzonAttrByBuiltinMap(attr.name, source1688Attrs);
       if (val) {
         builtinHits.push({ attr, value: val });
         builtinMatchedIds.add(Number(attr.id));
       }
     }
-    log(`step 2a done: ${builtinHits.length} builtin matches`);
+    log(`step 2a done: ${builtinHits.length} builtin matches (required-only)`);
 
-    // 3. AI suggests for remaining (unmatched) attributes
-    const remainingAttrs = attrs.filter((a) => !builtinMatchedIds.has(Number(a.id)));
+    // 3. AI suggests for remaining (unmatched) required attributes
+    const remainingAttrs = requiredFillAttrs.filter((a) => !builtinMatchedIds.has(Number(a.id)));
+    const optionalRemaining = remainingAttrs.filter((attr) => attr.isRequired !== true);
+    if (optionalRemaining.length > 0) {
+      log(`WARN: ${optionalRemaining.length} optional attrs leaked into AI target — must never happen`);
+    }
     let aiSuggestions = [];
     if (remainingAttrs.length > 0) {
       log(`step 2b: callAi for ${remainingAttrs.length} remaining attrs...`);
@@ -1506,9 +1519,10 @@ async function fillCategoryAttributes(settings, sourceRows, normalized) {
       }
     }
 
-    // 4b. Resolve AI suggestions
+    // 4b. Resolve AI suggestions — defensive: only required autofill targets
+    // may enter resolved, even if the AI response names an optional ID.
     for (const s of aiSuggestions) {
-      const attr = attrs.find((a) => Number(a.id) === Number(s.attribute_id));
+      const attr = requiredFillAttrs.find((a) => Number(a.id) === Number(s.attribute_id));
       if (!attr) continue;
 
       if (attr.dictionaryId) {
@@ -1525,8 +1539,9 @@ async function fillCategoryAttributes(settings, sourceRows, normalized) {
 
     log(`step 4 done: ${resolved.length} resolved values (builtin=${builtinHits.length}, ai=${aiSuggestions.length})`);
     normalized.attribute_values = resolved;
-    // Store full attribute definitions for variant dimension mapping later
-    normalized._category_attributes = attrs;
+    // Store full attribute definitions for variant dimension mapping later.
+    // Metadata is NOT the autofill result: keep required + optional together.
+    normalized._category_attributes = visibleAttrs;
   } catch (err) {
     log(`FAILED: ${err?.message || err}\n${err?.stack || ''}`);
   }
@@ -1550,12 +1565,15 @@ async function completeOzonDraftItems(settings, sourceRows, normalized, items) {
   const allAttrs = Array.isArray(catAttrs.attributes) ? catAttrs.attributes : [];
   const requiredAttrs = allAttrs.filter((a) => a.isRequired);
   const fillableAttrs = visibleDraftCategoryAttributes(allAttrs);
+  // Dynamic defaults (origin country / gender) may only autofill REQUIRED
+  // dynamic attributes. allAttrs stays the full metadata source.
+  const requiredFillableAttrs = fillableAttrs.filter((attr) => attr.isRequired === true);
 
   // Step 1: apply generated attribute_values to all items
   applyGeneratedAttributeValuesToItems(items, normalized.attribute_values);
 
   // Step 2: apply backend defaults (origin country, brand, weight)
-  await applyBackendDefaultsToItems(settings, userDataPath, descId, typeId, sourceRows, items, fillableAttrs, allAttrs);
+  await applyBackendDefaultsToItems(settings, userDataPath, descId, typeId, sourceRows, items, requiredFillableAttrs, allAttrs);
 
   // Step 3: check what's still missing
   let missingRequired = missingRequiredCategoryAttributes(items[0], requiredAttrs);
