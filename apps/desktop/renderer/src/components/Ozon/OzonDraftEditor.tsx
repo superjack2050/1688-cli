@@ -407,7 +407,11 @@ function DictionaryAttributeField({
         if (!next || !event.currentTarget.contains(next as Node)) setOpen(false);
       }}
     >
-      <button type="button" className="ozon-dictionary-trigger" onClick={openDropdown}>
+      <button
+        type="button"
+        className={`ozon-dictionary-trigger${selected.length ? '' : ' is-empty'}`}
+        onClick={openDropdown}
+      >
         <span>{selected.length ? selected.join(' / ') : '点击选择 Ozon 字典值'}</span>
         <b>{loading ? '加载中' : '选择'}</b>
       </button>

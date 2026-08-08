@@ -1378,6 +1378,11 @@
   font-weight: 900;
 }
 
+.ozon-dictionary-trigger.is-empty span {
+  color: #9ca3af;
+  font-weight: 400;
+}
+
 .ozon-dictionary-dropdown {
   position: absolute;
   z-index: 50;
