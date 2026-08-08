@@ -10,6 +10,7 @@ const {
   generateOzonDraft,
   submitOzonDraft,
   sanitizeGeneratedAttributeValues,
+  resolveMergeCardKeys,
 } = require('../apps/desktop/ozon-draft.cjs') as {
   collectDraftMissing: (items: Array<Record<string, unknown>>, draft?: Record<string, unknown>) => string[];
   generateOzonDraft: (
@@ -24,6 +25,11 @@ const {
   sanitizeGeneratedAttributeValues: (
     attributeValues: Array<Record<string, unknown>>,
     categoryAttributes: Array<Record<string, unknown>>,
+  ) => Array<Record<string, unknown>>;
+  resolveMergeCardKeys: (
+    normalized: Record<string, any>,
+    attrs: Array<Record<string, unknown>>,
+    items: Array<Record<string, any>>,
   ) => Array<Record<string, unknown>>;
 };
 
@@ -959,6 +965,379 @@ describe('ozon draft submit helper', () => {
         expect(hashtagLog).toContain('[ozon-submit:hashtag] offer_id=offer-1 source_attr_id=23171 target_attr_id=22508 tag_count=5');
       } finally {
         stderrSpy.mockRestore();
+      }
+    });
+  });
+
+  describe('merge card (TEST-01..13)', () => {
+    const {
+      formatMergeCardKey,
+      applyMergeCardKeyToItems,
+    } = require('../apps/desktop/ozon-attribute-specials.cjs') as {
+      formatMergeCardKey: (date?: Date) => string;
+      applyMergeCardKeyToItems: (items: Array<Record<string, any>>, attrMeta: Record<string, unknown>, mergeCardKey: string) => void;
+    };
+
+    const MERGE_CARD_ATTR_ID = 300;
+    const MODEL_ATTR_ID = 200;
+
+    async function mergeCardTreeDir(): Promise<string> {
+      const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'desktop-mergecard-'));
+      await fs.mkdir(path.join(tempDir, 'categories'), { recursive: true });
+      await fs.writeFile(path.join(tempDir, 'categories', 'ozon_category_tree.zh_hans.json'), JSON.stringify({
+        result: [{
+          description_category_id: 1700,
+          category_name: '手机配件',
+          children: [{
+            description_category_id: 1700,
+            category_name: '保护配件',
+            children: [{
+              description_category_id: 1700,
+              type_id: 9300,
+              type_name: '手机壳',
+              children: [],
+            }],
+          }],
+        }],
+      }), 'utf8');
+      await fs.writeFile(path.join(tempDir, 'ozon_settings.json'), JSON.stringify({
+        ai: { provider: 'deepseek', baseUrl: 'https://api.example.test', model: 'model', apiKey: 'ai-key' },
+        ozon: { clientId: 'client', apiKey: 'key', currencyCode: 'CNY' },
+      }), 'utf8');
+      return tempDir;
+    }
+
+    function autofillSettings(userDataPath: string) {
+      return {
+        ai: { apiKey: 'ai-key', baseUrl: 'https://api.example.test', model: 'model' },
+        ozon: { clientId: 'client', apiKey: 'key', currencyCode: 'CNY' },
+        userDataPath,
+      };
+    }
+
+    function autofillSourceRow(attrs: Record<string, string>, skuName = '颜色:透明') {
+      return {
+        offer_id: '1688-offer',
+        sku_id: 'sku-1',
+        search_keyword: '手机壳',
+        product_title: '透明手机保护壳',
+        sku_name: skuName,
+        sku_price: '13',
+        main_image_url: 'https://example.com/case.jpg',
+        length_cm: '18',
+        width_cm: '9',
+        height_cm: '2',
+        weight_g: '120',
+        sku_stock: 10,
+        ...(Object.keys(attrs).length ? { product_attributes_structured: attrs } : {}),
+      };
+    }
+
+    function mergeCardMeta(extraAttrs: Array<Record<string, unknown>> = []) {
+      return categoryMeta([
+        { id: MERGE_CARD_ATTR_ID, name: '合并至一张卡片', is_required: true },
+        ...extraAttrs,
+      ]);
+    }
+
+    function mergeCardSourceQueue(fetchMock: ReturnType<typeof vi.mocked<typeof fetch>>) {
+      fetchMock
+        .mockResolvedValueOnce(aiDraftResponse())
+        .mockResolvedValueOnce(mergeCardMeta([{ id: MODEL_ATTR_ID, name: '型号', is_required: true }]))
+        .mockResolvedValueOnce(aiSuggestionsResponse([{ attribute_id: MODEL_ATTR_ID, value_text: 'XL' }]))
+        .mockResolvedValueOnce(mergeCardMeta([{ id: MODEL_ATTR_ID, name: '型号', is_required: true }]));
+      fetchMock.mockResolvedValue(emptyValues());
+    }
+
+    function emptyValues() {
+      return okJson({ result: [] }) as Response;
+    }
+
+    function mergeCardValueOf(item: Record<string, any>): string {
+      const attrs = Array.isArray(item.attributes) ? item.attributes : [];
+      const attr = attrs.find((a) => Number(a.id) === MERGE_CARD_ATTR_ID);
+      return String(attr?.values?.[0]?.value || '');
+    }
+
+    function dictHit() {
+      return okJson({ result: [{ id: 123456, value: '双面德绒打底衫' }] }) as Response;
+    }
+
+    function importBodyOf(fetchMock: ReturnType<typeof vi.mocked<typeof fetch>>) {
+      const importCall = fetchMock.mock.calls.find((call) => endpointOf(call) === '/v3/product/import');
+      return JSON.parse(String((importCall?.[1] as RequestInit).body || '{}')) as {
+        items: Array<{ offer_id: string; attributes: Array<{ id: number; values: Array<{ value?: string }> }> }>;
+      };
+    }
+
+    it('formats yyyyMMddHHmmss in LOCAL time (TEST-01)', () => {
+      expect(formatMergeCardKey(new Date(2026, 7, 8, 19, 8, 37))).toBe('20260808190837');
+      expect(formatMergeCardKey(new Date(2026, 0, 5, 0, 0, 0))).toBe('20260105000000');
+      expect(formatMergeCardKey(new Date(2026, 11, 31, 23, 59, 59))).toBe('20261231235959');
+      try {
+        vi.useFakeTimers({ toFake: ['Date'] });
+        vi.setSystemTime(new Date(2026, 7, 8, 19, 8, 37));
+        expect(formatMergeCardKey()).toBe('20260808190837');
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('generates one 14-digit key for a single SKU (TEST-02)', async () => {
+      const tempDir = await mergeCardTreeDir();
+      try {
+        const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+        const fetchMock = vi.mocked(fetch);
+        mergeCardSourceQueue(fetchMock);
+
+        const draft = await generateOzonDraft(autofillSettings(tempDir), [autofillSourceRow({})]);
+
+        const key = String(draft.generated.merge_card_key || '');
+        expect(key).toMatch(/^\d{14}$/);
+        expect(mergeCardValueOf(draft.items[0])).toBe(key);
+        expect(draft.status).toBe('ready');
+
+        const mergeCardLog = stderrSpy.mock.calls.map((call) => String(call[0])).join('');
+        expect(mergeCardLog).toContain('[ozon-merge-card]');
+        expect(mergeCardLog).toContain('unique_values=1');
+        stderrSpy.mockRestore();
+      } finally {
+        await fs.rm(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    it('gives EVERY SKU the same key (5 SKUs) (TEST-03)', async () => {
+      const tempDir = await mergeCardTreeDir();
+      try {
+        const fetchMock = vi.mocked(fetch);
+        mergeCardSourceQueue(fetchMock);
+        const rows = ['透明', '黑色', '蓝色', '红色', '白色'].map((color, index) => ({
+          ...autofillSourceRow({}, `颜色:${color}`),
+          sku_id: `sku-${index}`,
+        }));
+
+        const draft = await generateOzonDraft(autofillSettings(tempDir), rows);
+
+        const key = String(draft.generated.merge_card_key || '');
+        expect(key).toMatch(/^\d{14}$/);
+        expect(draft.items).toHaveLength(5);
+        expect(new Set(draft.items.map((item: Record<string, any>) => mergeCardValueOf(item)))).toEqual(new Set([key]));
+        expect(draft.items.every((item: Record<string, any>) => mergeCardValueOf(item) === key)).toBe(true);
+      } finally {
+        await fs.rm(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    it('gives EVERY SKU the same key (20 SKUs) (TEST-04)', async () => {
+      const tempDir = await mergeCardTreeDir();
+      try {
+        const fetchMock = vi.mocked(fetch);
+        mergeCardSourceQueue(fetchMock);
+        const rows = Array.from({ length: 20 }, (_, index) => ({
+          ...autofillSourceRow({}, `颜色:${index}`),
+          sku_id: `sku-${index}`,
+        }));
+
+        const draft = await generateOzonDraft(autofillSettings(tempDir), rows);
+
+        const key = String(draft.generated.merge_card_key || '');
+        expect(key).toMatch(/^\d{14}$/);
+        expect(draft.items).toHaveLength(20);
+        expect(new Set(draft.items.map((item: Record<string, any>) => mergeCardValueOf(item)))).toEqual(new Set([key]));
+      } finally {
+        await fs.rm(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    it('excludes the merge card attribute from the AI prompt (TEST-05)', async () => {
+      const tempDir = await mergeCardTreeDir();
+      try {
+        const fetchMock = vi.mocked(fetch);
+        mergeCardSourceQueue(fetchMock);
+
+        const draft = await generateOzonDraft(autofillSettings(tempDir), [autofillSourceRow({})]);
+
+        const aiCalls = fetchMock.mock.calls.filter((call) => String(call[0]).startsWith('https://api.example.test'));
+        expect(aiCalls.length).toBeGreaterThanOrEqual(2);
+        const suggestionCall = aiCalls[aiCalls.length - 1];
+        const body = JSON.parse(String((suggestionCall?.[1] as RequestInit).body || '{}'));
+        const prompt = JSON.stringify(body);
+        expect(prompt).not.toContain('合并至一张卡片');
+        expect(prompt).not.toContain('объедин');
+
+        const attrIds = (draft.generated.attribute_values || []).map((v: Record<string, unknown>) => Number(v.attribute_id));
+        expect(attrIds).not.toContain(MERGE_CARD_ATTR_ID);
+        expect(mergeCardValueOf(draft.items[0])).toBe(String(draft.generated.merge_card_key));
+      } finally {
+        await fs.rm(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    it('never calls the dictionary values endpoint (TEST-06)', async () => {
+      const tempDir = await mergeCardTreeDir();
+      try {
+        const fetchMock = vi.mocked(fetch);
+        mergeCardSourceQueue(fetchMock);
+
+        await generateOzonDraft(autofillSettings(tempDir), [autofillSourceRow({})]);
+
+        const valuesCalls = fetchMock.mock.calls.filter((call) =>
+          endpointOf(call).startsWith('/v1/description-category/attribute/values'),
+        );
+        expect(valuesCalls).toHaveLength(0);
+      } finally {
+        await fs.rm(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    it('keeps the key across save (JSON round-trip) and re-resolution (TEST-07)', async () => {
+      const tempDir = await mergeCardTreeDir();
+      try {
+        const fetchMock = vi.mocked(fetch);
+        mergeCardSourceQueue(fetchMock);
+
+        const draft = await generateOzonDraft(autofillSettings(tempDir), [autofillSourceRow({})]);
+        const key = String(draft.generated.merge_card_key || '');
+
+        const saved = JSON.parse(JSON.stringify(draft));
+        expect(String(saved.generated.merge_card_key)).toBe(key);
+        expect(mergeCardValueOf(saved.items[0])).toBe(key);
+
+        resolveMergeCardKeys(saved.generated, [{ id: MERGE_CARD_ATTR_ID, name: '合并至一张卡片' }], saved.items);
+        expect(String(saved.generated.merge_card_key)).toBe(key);
+      } finally {
+        await fs.rm(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    it('submits the persisted key unchanged after reopen (TEST-08)', async () => {
+      const tempDir = await mergeCardTreeDir();
+      try {
+        const fetchMock = vi.mocked(fetch);
+        mergeCardSourceQueue(fetchMock);
+
+        const draft = await generateOzonDraft(autofillSettings(tempDir), [autofillSourceRow({})]);
+        const key = String(draft.generated.merge_card_key || '');
+        const saved = JSON.parse(JSON.stringify(draft));
+
+        fetchMock.mockReset();
+        fetchMock
+          .mockResolvedValueOnce(categoryMeta([
+            { id: 9048, name: '型号', is_required: true },
+            { id: MERGE_CARD_ATTR_ID, name: '合并至一张卡片', is_required: true },
+          ]))
+          .mockResolvedValueOnce(ok({ result: { task_id: 8844 } }) as Response)
+          .mockResolvedValueOnce(ok({ result: { items: [{ offer_id: 'offer-1', status: 'imported' }] } }) as Response);
+
+        const result = await submitOzonDraft(autofillSettings(tempDir), saved, { pollDelayMs: 0 });
+
+        expect(result.importStatus).toBe('imported');
+        const body = importBodyOf(fetchMock);
+        expect(mergeCardValueOf(body.items[0])).toBe(key);
+        const attrIds = body.items[0].attributes.map((a) => Number(a.id));
+        expect(attrIds).toContain(MERGE_CARD_ATTR_ID);
+      } finally {
+        await fs.rm(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    it('replaces historical Chinese values with one fresh key (TEST-09)', () => {
+      const generated = { title_ru: 'T' };
+      const items = [
+        { attributes: [{ id: MERGE_CARD_ATTR_ID, values: [{ value: '8801款' }] }] },
+        { attributes: [{ id: MERGE_CARD_ATTR_ID, values: [{ value: '8801款' }] }] },
+      ];
+      const specialAttrs = [{ id: MERGE_CARD_ATTR_ID, name: '合并至一张卡片' }];
+
+      const found = resolveMergeCardKeys(generated, specialAttrs, items);
+      expect(found).toHaveLength(1);
+      expect(String(generated.merge_card_key)).toMatch(/^\d{14}$/);
+      expect(String(generated.merge_card_key)).not.toBe('8801款');
+      expect(String(generated.merge_card_key)).not.toContain('8801');
+
+      applyMergeCardKeyToItems(items, specialAttrs[0], String(generated.merge_card_key));
+      expect(new Set(items.map((item) => mergeCardValueOf(item)))).toEqual(new Set([String(generated.merge_card_key)]));
+    });
+
+    it('replaces inconsistent historical values with one fresh key (TEST-10)', () => {
+      const generated = { title_ru: 'T' };
+      const items = [
+        { attributes: [{ id: MERGE_CARD_ATTR_ID, values: [{ value: '20260101120000' }] }] },
+        { attributes: [{ id: MERGE_CARD_ATTR_ID, values: [{ value: '20260101120001' }] }] },
+      ];
+      const specialAttrs = [{ id: MERGE_CARD_ATTR_ID, name: '合并至一张卡片' }];
+
+      const found = resolveMergeCardKeys(generated, specialAttrs, items);
+      expect(found).toHaveLength(1);
+      const key = String(generated.merge_card_key);
+      expect(key).toMatch(/^\d{14}$/);
+      expect(key).not.toBe('20260101120000');
+      expect(key).not.toBe('20260101120001');
+
+      applyMergeCardKeyToItems(items, specialAttrs[0], key);
+      expect(new Set(items.map((item) => mergeCardValueOf(item)))).toEqual(new Set([key]));
+    });
+
+    it('adopts a valid consistent 14-digit historical value as the key (TEST-11)', () => {
+      const generated = { title_ru: 'T' };
+      const items = [
+        { attributes: [{ id: MERGE_CARD_ATTR_ID, values: [{ value: '20260101120000' }] }] },
+        { attributes: [{ id: MERGE_CARD_ATTR_ID, values: [{ value: '20260101120000' }] }] },
+      ];
+      const specialAttrs = [{ id: MERGE_CARD_ATTR_ID, name: '合并至一张卡片' }];
+
+      const found = resolveMergeCardKeys(generated, specialAttrs, items);
+      expect(found).toHaveLength(1);
+      expect(String(generated.merge_card_key)).toBe('20260101120000');
+
+      applyMergeCardKeyToItems(items, specialAttrs[0], String(generated.merge_card_key));
+      expect(new Set(items.map((item) => mergeCardValueOf(item)))).toEqual(new Set(['20260101120000']));
+    });
+
+    it('other required attributes are still AI-filled normally (TEST-12)', async () => {
+      const tempDir = await mergeCardTreeDir();
+      try {
+        const fetchMock = vi.mocked(fetch);
+        mergeCardSourceQueue(fetchMock);
+
+        const draft = await generateOzonDraft(autofillSettings(tempDir), [autofillSourceRow({})]);
+
+        const generated = (draft.generated.attribute_values || []) as Array<Record<string, unknown>>;
+        expect(generated.some((v) => Number(v.attribute_id) === MODEL_ATTR_ID && v.value_text === 'XL')).toBe(true);
+        const modelAttr = draft.items[0].attributes.find((a: Record<string, any>) => Number(a.id) === MODEL_ATTR_ID);
+        expect(modelAttr?.values?.[0]?.value).toBe('XL');
+        expect(mergeCardValueOf(draft.items[0])).toBe(String(draft.generated.merge_card_key));
+      } finally {
+        await fs.rm(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    it('dictionary resolution for other required attributes is untouched (TEST-13)', async () => {
+      const tempDir = await mergeCardTreeDir();
+      try {
+        const fetchMock = vi.mocked(fetch);
+        const meta = mergeCardMeta([{ id: 100, name: '材质', is_required: true, dictionary_id: 9000 }]);
+        fetchMock
+          .mockResolvedValueOnce(aiDraftResponse())
+          .mockResolvedValueOnce(meta)
+          .mockResolvedValueOnce(dictHit())
+          .mockResolvedValueOnce(dictHit())
+          .mockResolvedValueOnce(meta);
+        fetchMock.mockResolvedValue(emptyValues());
+
+        const draft = await generateOzonDraft(autofillSettings(tempDir), [autofillSourceRow({ 材质: '长袖打底衫' })]);
+
+        const generated = (draft.generated.attribute_values || []) as Array<Record<string, unknown>>;
+        const material = generated.find((v) => Number(v.attribute_id) === 100);
+        expect(material).toBeTruthy();
+        expect(Number(material.dictionary_value_id)).toBe(123456);
+        expect(String(material.value_text)).toBe('双面德绒打底衫');
+        const materialAttr = draft.items[0].attributes.find((a: Record<string, any>) => Number(a.id) === 100);
+        expect(materialAttr?.values?.[0]).toEqual({ dictionary_value_id: 123456, value: '双面德绒打底衫' });
+        expect(mergeCardValueOf(draft.items[0])).toBe(String(draft.generated.merge_card_key));
+        expect(draft.status).toBe('ready');
+      } finally {
+        await fs.rm(tempDir, { recursive: true, force: true });
       }
     });
   });

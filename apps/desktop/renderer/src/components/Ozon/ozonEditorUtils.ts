@@ -657,13 +657,34 @@ export function collectHiddenRequiredAttributes(
 }
 
 /**
+ * System-determined special attributes are filled by the backend resolver
+ * (apps/desktop/ozon-attribute-specials.cjs, Round A: "合并至一张卡片"
+ * merge-card key). Exact-name matching only — the editor mirrors the
+ * backend name set so automatic fill paths never touch these attributes.
+ */
+const SYSTEM_SPECIAL_ATTR_NAMES = new Set([
+  '合并至一张卡片',
+  'объединить в одну карточку',
+  'объединять в одну карточку',
+  'объединять на одной карточке',
+  'объединение в одну карточку',
+]);
+
+export function isSystemSpecialAttribute(attr: { name?: string } | null | undefined): boolean {
+  if (!attr || typeof attr !== 'object') return false;
+  return SYSTEM_SPECIAL_ATTR_NAMES.has(text(attr.name).trim().toLowerCase());
+}
+
+/**
  * Autofill-target split: full category metadata stays in
  * `filterCategoryAttributesForMoreAttrs` (UI/manual entry), while every
  * automatic fill path (builtin, AI, defaults, historical prefill) may only
- * touch REQUIRED dynamic attributes.
+ * touch REQUIRED dynamic attributes. System-determined special attributes
+ * (merge into a single card) never participate — their value comes from the
+ * draft-level resolver.
  */
 export function filterRequiredOnlyAttributes(attrs: OzonCategoryAttribute[]): OzonCategoryAttribute[] {
-  return attrs.filter((attr) => attr.isRequired === true);
+  return attrs.filter((attr) => attr.isRequired === true && !isSystemSpecialAttribute(attr));
 }
 
 /**

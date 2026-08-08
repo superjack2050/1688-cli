@@ -2,6 +2,12 @@ const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const { getCategoryAttributes, getCategoryAttributeValues } = require('./ozon-settings.cjs');
+const {
+  classifyOzonAttribute,
+  resolveDraftMergeCardKey,
+  applyMergeCardKeyToItems,
+  countUniqueMergeCardValues,
+} = require('./ozon-attribute-specials.cjs');
 
 const ATTR_MODEL_NAME = 9048;
 const ATTR_DESCRIPTION = 4191;
@@ -620,6 +626,9 @@ const DANGEROUS_AI_NUMERIC_OPTIONAL_ATTR_IDS = new Set([8383]);
 
 function shouldDropUnsafeOptionalNumericAttribute(attrId, meta, value) {
   const id = Number(attrId);
+  // System-determined special values (merge-card key) are never AI garbage
+  // — always kept even when the attribute is optional/numeric.
+  if (classifyOzonAttribute(meta) === 'special') return false;
   if (meta.isRequired === true) return false;
   const raw = cleanText(value);
   if (!raw) return false;
@@ -1500,15 +1509,19 @@ async function fillCategoryAttributes(settings, sourceRows, normalized) {
       language: 'ZH_HANS',
     });
     const visibleAttrs = visibleDraftCategoryAttributes(catAttrs.attributes || []);
-    const requiredFillAttrs = visibleAttrs.filter((attr) => attr.isRequired === true);
-    log(`step 1 done: ${visibleAttrs.length} visible attrs, ${requiredFillAttrs.length} required autofill targets`);
+    // System-determined special attributes (merge into a single card) get a
+    // draft-level key here; they never enter builtin/AI/dictionary paths.
+    resolveMergeCardKeys(normalized, visibleAttrs, []);
+    const aiFillAttrs = visibleAttrs.filter((attr) => attr.isRequired === true && classifyOzonAttribute(attr) !== 'special');
+    log(`step 1 done: ${visibleAttrs.length} visible attrs, ${aiFillAttrs.length} required autofill targets`);
     if (!visibleAttrs.length) { log('SKIP: no attributes'); return; }
-    if (!requiredFillAttrs.length) {
+    if (!aiFillAttrs.length) {
       // Metadata must never shrink to required-only: keep the full list even
-      // when there is nothing to autofill.
+      // when there is nothing to autofill. Special-only categories are fully
+      // handled by the system resolver above.
       normalized.attribute_values = [];
       normalized._category_attributes = visibleAttrs;
-      log('SKIP: no required attributes to autofill; full metadata kept');
+      log('SKIP: no AI autofill targets; full metadata kept');
       return;
     }
 
@@ -1523,7 +1536,7 @@ async function fillCategoryAttributes(settings, sourceRows, normalized) {
     }
     const builtinHits = [];
     const builtinMatchedIds = new Set();
-    for (const attr of requiredFillAttrs) {
+    for (const attr of aiFillAttrs) {
       const val = matchOzonAttrByBuiltinMap(attr.name, source1688Attrs);
       if (val) {
         builtinHits.push({ attr, value: val });
@@ -1533,7 +1546,7 @@ async function fillCategoryAttributes(settings, sourceRows, normalized) {
     log(`step 2a done: ${builtinHits.length} builtin matches (required-only)`);
 
     // 3. AI suggests for remaining (unmatched) required attributes
-    const remainingAttrs = requiredFillAttrs.filter((a) => !builtinMatchedIds.has(Number(a.id)));
+    const remainingAttrs = aiFillAttrs.filter((a) => !builtinMatchedIds.has(Number(a.id)));
     const optionalRemaining = remainingAttrs.filter((attr) => attr.isRequired !== true);
     if (optionalRemaining.length > 0) {
       log(`WARN: ${optionalRemaining.length} optional attrs leaked into AI target — must never happen`);
@@ -1590,7 +1603,7 @@ async function fillCategoryAttributes(settings, sourceRows, normalized) {
     // 4b. Resolve AI suggestions — defensive: only required autofill targets
     // may enter resolved, even if the AI response names an optional ID.
     for (const s of aiSuggestions) {
-      const attr = requiredFillAttrs.find((a) => Number(a.id) === Number(s.attribute_id));
+      const attr = aiFillAttrs.find((a) => Number(a.id) === Number(s.attribute_id));
       if (!attr) continue;
 
       if (attr.dictionaryId) {
@@ -1635,17 +1648,30 @@ async function completeOzonDraftItems(settings, sourceRows, normalized, items) {
   const requiredAttrs = allAttrs.filter((a) => a.isRequired);
   const fillableAttrs = visibleDraftCategoryAttributes(allAttrs);
   // Dynamic defaults (origin country / gender) may only autofill REQUIRED
-  // dynamic attributes. allAttrs stays the full metadata source.
-  const requiredFillableAttrs = fillableAttrs.filter((attr) => attr.isRequired === true);
+  // dynamic attributes. allAttrs stays the full metadata source. Special
+  // attributes (merge into a single card) are excluded — they are filled by
+  // the dedicated system resolver below.
+  const requiredFillableAttrs = fillableAttrs.filter((attr) => attr.isRequired === true && classifyOzonAttribute(attr) !== 'special');
 
   // Step 1: apply generated attribute_values to all items
   applyGeneratedAttributeValuesToItems(items, normalized.attribute_values, allAttrs);
+
+  // Step 1.5: system-determined special attributes — ONE value for EVERY
+  // SKU, resolved once per draft (idempotent, see resolveMergeCardKeys).
+  const specialAttrs = resolveMergeCardKeys(normalized, allAttrs, items);
+  for (const attr of specialAttrs) {
+    applyMergeCardKeyToItems(items, attr, normalized.merge_card_key);
+  }
+  if (specialAttrs.length) {
+    const unique = countUniqueMergeCardValues(items, specialAttrs);
+    process.stderr.write(`[ozon-merge-card] product_key=${cleanText(normalized.title_ru) || '-'} attr_id=${specialAttrs.map((a) => a.id).join(',')} merge_card_key=${normalized.merge_card_key || '-'} item_count=${items.length} unique_values=${unique}\n`);
+  }
 
   // Step 2: apply backend defaults (origin country, brand, weight)
   await applyBackendDefaultsToItems(settings, userDataPath, descId, typeId, sourceRows, items, requiredFillableAttrs, allAttrs);
 
   // Step 3: check what's still missing
-  let missingRequired = missingRequiredCategoryAttributes(items[0], requiredAttrs);
+  let missingRequired = missingRequiredCategoryAttributes(items[0], requiredAttrs).filter((a) => classifyOzonAttribute(a) !== 'special');
   let mergedValues = Array.isArray(normalized.attribute_values) ? [...normalized.attribute_values] : [];
 
   // Step 4: AI retry for missing required — up to 2 rounds
@@ -1664,7 +1690,7 @@ async function completeOzonDraftItems(settings, sourceRows, normalized, items) {
       process.stderr.write(`[ozon-draft] retry round ${attempt} failed: ${err?.message || err}\n`);
       break;
     }
-    missingRequired = missingRequiredCategoryAttributes(items[0], requiredAttrs);
+    missingRequired = missingRequiredCategoryAttributes(items[0], requiredAttrs).filter((a) => classifyOzonAttribute(a) !== 'special');
   }
 
   normalized.attribute_values = mergedValues;
@@ -1696,12 +1722,33 @@ function sanitizeGeneratedAttributeValues(attributeValues, categoryAttributes) {
     const attrId = Number(value.attribute_id || value.id || 0);
     if (!attrId) return false;
     const meta = metaById.get(attrId) || {};
+    // Special attributes are resolved by the dedicated system path
+    // (resolveMergeCardKeys + applyMergeCardKeyToItems); anything reaching
+    // this gate for them is stale AI/builtin output and must never land in
+    // the draft.
+    if (classifyOzonAttribute(meta) === 'special') return false;
     const isDict = Number(meta.dictionaryId || 0) > 0;
     const textValue = cleanText(value.value_text || value.value || '');
     const dictId = Number(value.dictionary_value_id || value.dictionaryValueId || 0);
     if (isDict) return dictId > 0;
     return Boolean(textValue) || dictId > 0;
   });
+}
+
+// System-determined special attributes (Round A: merge into a single card)
+// resolve ONCE per product draft. The key lives directly on the
+// draft.generated object as merge_card_key so Save/Validate/Submit/Reopen
+// never regenerate it. Historical values are migrated: an existing valid
+// 14-digit key is adopted; Chinese/dirty/inconsistent values are replaced
+// by one fresh local-time key. Idempotent — safe at any pipeline stage.
+function resolveMergeCardKeys(normalized, attrs, items) {
+  const specialAttrs = (Array.isArray(attrs) ? attrs : []).filter((a) => classifyOzonAttribute(a) === 'special');
+  if (!specialAttrs.length) return [];
+  const key = resolveDraftMergeCardKey(normalized, Array.isArray(items) ? items : [], specialAttrs);
+  normalized.merge_card_key = key;
+  normalized._merge_card_keys = {};
+  for (const attr of specialAttrs) normalized._merge_card_keys[String(attr.id)] = key;
+  return specialAttrs;
 }
 
 function missingRequiredCategoryAttributes(item, requiredAttrs) {
@@ -2243,4 +2290,4 @@ function normalizeAttributeSuggestions(data, categoryAttributes) {
   };
 }
 
-module.exports = { generateOzonDraft, submitOzonDraft, collectDraftMissing, generateOzonAttributeSuggestions, sanitizeGeneratedAttributeValues };
+module.exports = { generateOzonDraft, submitOzonDraft, collectDraftMissing, generateOzonAttributeSuggestions, sanitizeGeneratedAttributeValues, resolveMergeCardKeys };
