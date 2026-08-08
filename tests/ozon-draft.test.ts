@@ -9,6 +9,7 @@ const {
   collectDraftMissing,
   generateOzonDraft,
   submitOzonDraft,
+  sanitizeGeneratedAttributeValues,
 } = require('../apps/desktop/ozon-draft.cjs') as {
   collectDraftMissing: (items: Array<Record<string, unknown>>, draft?: Record<string, unknown>) => string[];
   generateOzonDraft: (
@@ -20,6 +21,10 @@ const {
     draft: Record<string, any>,
     options?: Record<string, unknown>,
   ) => Promise<Record<string, unknown>>;
+  sanitizeGeneratedAttributeValues: (
+    attributeValues: Array<Record<string, unknown>>,
+    categoryAttributes: Array<Record<string, unknown>>,
+  ) => Array<Record<string, unknown>>;
 };
 
 const settings = {
@@ -496,6 +501,194 @@ describe('ozon draft submit helper', () => {
         const ids = (draft.generated.attribute_values || []).map((v) => Number(v.attribute_id));
         expect(ids).toEqual(expect.arrayContaining([100, 300]));
         expect(ids).not.toContain(200);
+      } finally {
+        await fs.rm(tempDir, { recursive: true, force: true });
+      }
+    });
+  });
+
+  describe('dictionary integrity (TEST-01..05)', () => {
+    async function categoryTreeDir(): Promise<string> {
+      const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'desktop-dict-'));
+      await fs.mkdir(path.join(tempDir, 'categories'), { recursive: true });
+      await fs.writeFile(path.join(tempDir, 'categories', 'ozon_category_tree.zh_hans.json'), JSON.stringify({
+        result: [{
+          description_category_id: 1700,
+          category_name: '手机配件',
+          children: [{
+            description_category_id: 1700,
+            category_name: '保护配件',
+            children: [{
+              description_category_id: 1700,
+              type_id: 9300,
+              type_name: '手机壳',
+              children: [],
+            }],
+          }],
+        }],
+      }), 'utf8');
+      await fs.writeFile(path.join(tempDir, 'ozon_settings.json'), JSON.stringify({
+        ai: { provider: 'deepseek', baseUrl: 'https://api.example.test', model: 'model', apiKey: 'ai-key' },
+        ozon: { clientId: 'client', apiKey: 'key', currencyCode: 'CNY' },
+      }), 'utf8');
+      return tempDir;
+    }
+
+    function autofillSettings(userDataPath: string) {
+      return {
+        ai: { apiKey: 'ai-key', baseUrl: 'https://api.example.test', model: 'model' },
+        ozon: { clientId: 'client', apiKey: 'key', currencyCode: 'CNY' },
+        userDataPath,
+      };
+    }
+
+    function autofillSourceRow(attrs: Record<string, string>) {
+      return {
+        offer_id: '1688-offer',
+        sku_id: 'sku-1',
+        search_keyword: '手机壳',
+        product_title: '透明手机保护壳',
+        sku_name: '颜色:透明',
+        sku_price: '13',
+        main_image_url: 'https://example.com/case.jpg',
+        length_cm: '18',
+        width_cm: '9',
+        height_cm: '2',
+        weight_g: '120',
+        sku_stock: 10,
+        ...(Object.keys(attrs).length ? { product_attributes_structured: attrs } : {}),
+      };
+    }
+
+    const emptyValues = () => okJson({ result: [] }) as Response;
+    const dictHit = () => okJson({ result: [{ id: 123456, value: '双面德绒打底衫' }] }) as Response;
+
+    it('builtin dictionary resolve failure leaves the attribute empty (TEST-01)', async () => {
+      const tempDir = await categoryTreeDir();
+      try {
+        const fetchMock = vi.mocked(fetch);
+        const meta = categoryMeta([
+          { id: 100, name: '材质', is_required: true, dictionary_id: 9000 },
+        ]);
+        fetchMock
+          .mockResolvedValueOnce(aiDraftResponse())
+          .mockResolvedValueOnce(meta)
+          .mockResolvedValueOnce(emptyValues())
+          .mockResolvedValueOnce(emptyValues())
+          .mockResolvedValueOnce(meta);
+        fetchMock.mockResolvedValue(emptyValues());
+
+        const draft = await generateOzonDraft(autofillSettings(tempDir), [autofillSourceRow({ 材质: '长袖打底衫' })]);
+
+        const ids = (draft.generated.attribute_values || []).map((v) => Number(v.attribute_id));
+        expect(ids).not.toContain(100);
+        const itemIds = (draft.items[0].attributes || []).map((a) => Number(a.id));
+        expect(itemIds).not.toContain(100);
+        const sources = (draft.generated.attribute_values || []).map((v) => v._source);
+        expect(sources).not.toContain('builtin-nodict');
+      } finally {
+        await fs.rm(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    it('AI dictionary resolve failure leaves the attribute empty (TEST-02)', async () => {
+      const tempDir = await categoryTreeDir();
+      try {
+        const fetchMock = vi.mocked(fetch);
+        const meta = categoryMeta([
+          { id: 100, name: '类型', is_required: true, dictionary_id: 9000 },
+        ]);
+        fetchMock
+          .mockResolvedValueOnce(aiDraftResponse())
+          .mockResolvedValueOnce(meta)
+          .mockResolvedValueOnce(aiSuggestionsResponse([
+            { attribute_id: 100, value_text: '长袖打底衫', dictionary_query: '长袖打底衫' },
+          ]))
+          .mockResolvedValueOnce(emptyValues())
+          .mockResolvedValueOnce(emptyValues())
+          .mockResolvedValueOnce(meta);
+        fetchMock.mockResolvedValue(emptyValues());
+
+        const draft = await generateOzonDraft(autofillSettings(tempDir), [autofillSourceRow({ 材质: '棉' })]);
+
+        const ids = (draft.generated.attribute_values || []).map((v) => Number(v.attribute_id));
+        expect(ids).not.toContain(100);
+        const itemIds = (draft.items[0].attributes || []).map((a) => Number(a.id));
+        expect(itemIds).not.toContain(100);
+        const sources = (draft.generated.attribute_values || []).map((v) => v._source);
+        expect(sources).not.toContain('ai-nodict');
+      } finally {
+        await fs.rm(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    it('sanitizes historical generated values: dictionary without real id is dropped (TEST-03)', () => {
+      const meta = [
+        { id: 100, name: '类型', dictionaryId: 9000 },
+        { id: 200, name: '风格', dictionaryId: 0 },
+      ];
+      const values = [
+        { attribute_id: 100, value_text: '长袖打底衫', dictionary_value_id: null },
+        { attribute_id: 100, value_text: '双面德绒打底衫', dictionary_value_id: 123456 },
+        { attribute_id: 200, value_text: '休闲', dictionary_value_id: null },
+      ];
+      const sanitized = sanitizeGeneratedAttributeValues(values, meta);
+      expect(sanitized).toEqual([
+        { attribute_id: 100, value_text: '双面德绒打底衫', dictionary_value_id: 123456 },
+        { attribute_id: 200, value_text: '休闲', dictionary_value_id: null },
+      ]);
+    });
+
+    it('text-only dictionary value keeps the required attribute missing (TEST-04)', async () => {
+      const tempDir = await categoryTreeDir();
+      try {
+        const fetchMock = vi.mocked(fetch);
+        const meta = categoryMeta([
+          { id: 100, name: '材质', is_required: true, dictionary_id: 9000 },
+        ]);
+        fetchMock
+          .mockResolvedValueOnce(aiDraftResponse())
+          .mockResolvedValueOnce(meta)
+          .mockResolvedValueOnce(emptyValues())
+          .mockResolvedValueOnce(emptyValues())
+          .mockResolvedValueOnce(meta);
+        fetchMock.mockResolvedValue(emptyValues());
+
+        const draft = await generateOzonDraft(autofillSettings(tempDir), [autofillSourceRow({ 材质: '长袖打底衫' })]);
+
+        expect(draft.missing).toContain('材质');
+        expect(draft.status).toBe('needs_review');
+        expect(draft.items[0].attributes.some((a) => Number(a.id) === 100)).toBe(false);
+      } finally {
+        await fs.rm(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    it('a real dictionary_value_id marks the required attribute as filled (TEST-05)', async () => {
+      const tempDir = await categoryTreeDir();
+      try {
+        const fetchMock = vi.mocked(fetch);
+        const meta = categoryMeta([
+          { id: 100, name: '材质', is_required: true, dictionary_id: 9000 },
+        ]);
+        fetchMock
+          .mockResolvedValueOnce(aiDraftResponse())
+          .mockResolvedValueOnce(meta)
+          .mockResolvedValueOnce(dictHit())
+          .mockResolvedValueOnce(dictHit())
+          .mockResolvedValueOnce(meta);
+        fetchMock.mockResolvedValue(emptyValues());
+
+        const draft = await generateOzonDraft(autofillSettings(tempDir), [autofillSourceRow({ 材质: '长袖打底衫' })]);
+
+        const generated = draft.generated.attribute_values.find((v) => Number(v.attribute_id) === 100);
+        expect(generated).toBeTruthy();
+        expect(generated.dictionary_value_id).toBe(123456);
+        expect(generated.value_text).toBe('双面德绒打底衫');
+        const itemAttr = draft.items[0].attributes.find((a) => Number(a.id) === 100);
+        expect(itemAttr.values).toEqual([{ dictionary_value_id: 123456, value: '双面德绒打底衫' }]);
+        expect(draft.missing).not.toContain('材质');
+        expect(draft.status).toBe('ready');
       } finally {
         await fs.rm(tempDir, { recursive: true, force: true });
       }

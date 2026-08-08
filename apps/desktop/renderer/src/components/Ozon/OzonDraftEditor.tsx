@@ -32,15 +32,16 @@ import {
   filterRequiredOnlyAttributes,
   firstItemOf,
   intForPayload,
-  lineList,
   normalizeImageUrl,
   normalizeRichContentJson,
   objectOf,
   parseCustomAttributesDetailed,
   pruneDynamicValuesForCategory,
   resolvePrefillableAttributeValues,
+  sanitizeDictionarySelections,
   text,
   validationSectionLabel,
+  validDictionarySelectedLabels,
   type AttributeLoadState,
   type CategoryTreeViewNode,
   type DictionaryValueIds,
@@ -330,7 +331,9 @@ function DictionaryAttributeField({
   const [message, setMessage] = useState('');
   const [query, setQuery] = useState('');
   const [options, setOptions] = useState<OzonAttributeValue[]>([]);
-  const selected = lineList(value);
+  // Only selections with a real dictionary_value_id count as selected.
+  // Text-only lines (stale history or unresolved AI hints) are never shown.
+  const selected = validDictionarySelectedLabels(value, valueIds);
   const selectedSet = new Set(selected);
   const multi = attr.isCollection || attr.maxValueCount !== 1;
   const maxCount = attr.maxValueCount > 1 ? attr.maxValueCount : 0;
@@ -792,13 +795,21 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onCl
 
   function applyPrefilledAttributeValues(
     values: Array<{ attribute_id: number; value_text: string; dictionary_value_id?: number }>,
+    attrs: OzonCategoryAttribute[],
   ) {
+    const attrMap = new Map(attrs.map((attr) => [Number(attr.id), attr]));
     for (const v of values) {
+      const attr = attrMap.get(Number(v.attribute_id));
+      if (!attr) continue;
       const attrKey = String(v.attribute_id);
       if (text(dynamicValues[attrKey])) continue; // don't overwrite user edits
+      const dictId = Number(v.dictionary_value_id || 0);
+      // Dictionary attributes without a REAL dictionary_value_id are never
+      // applied: the raw text is not a valid selection.
+      if (attr.dictionaryId > 0 && dictId <= 0) continue;
       updateDynamicValue(v.attribute_id, v.value_text);
-      if (v.dictionary_value_id) {
-        updateDictionaryValueIds(v.attribute_id, { [v.value_text]: v.dictionary_value_id });
+      if (dictId > 0) {
+        updateDictionaryValueIds(v.attribute_id, { [v.value_text]: dictId });
       }
     }
   }
@@ -860,7 +871,7 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onCl
       setMessage('草稿已附带特征值，正在应用...');
       try {
         await applyDefaultOriginCountry(attrs);
-        applyPrefilledAttributeValues(requiredPrefillValues);
+        applyPrefilledAttributeValues(requiredPrefillValues, requiredAiAttributes);
         setMessage('AI 已尝试填写类目特征，请检查字典项是否正确。');
       } catch (error) {
         setMessage(error instanceof Error ? error.message : String(error));
@@ -1000,9 +1011,13 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onCl
         if (!alive) return;
         if (categoryKeyRef.current !== categoryKey) return;
         const attrs = response.attributes || [];
+        // Sanitize dictionary selections against the loaded metadata BEFORE
+        // the UI re-renders: text-only dictionary values from historical
+        // drafts must not surface as selected or reach the payload.
+        const prunedIds = pruneDictionaryIdsForCategory(dictionaryValueIds, attrs);
         setCategoryAttributes(attrs);
-        setDynamicValues((prev) => pruneDynamicValuesForCategory(prev, attrs));
-        setDictionaryValueIds((prev) => pruneDictionaryIdsForCategory(prev, attrs));
+        setDynamicValues((prev) => sanitizeDictionarySelections(pruneDynamicValuesForCategory(prev, attrs), prunedIds, attrs));
+        setDictionaryValueIds(prunedIds);
         setDictionaryPayloadValues((prev) => prunePayloadValuesForCategory(prev, attrs));
         setAttributeLoadState('ready');
         setAttributesMessage(`已加载 ${attrs.length} 项类目特征，其中必填 ${response.requiredCount} 项`);

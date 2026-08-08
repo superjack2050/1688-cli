@@ -8,10 +8,12 @@ import {
   ATTR_TAGS,
   ATTR_WEIGHT,
   buildAttributes,
+  buildCategoryAwareAttribute,
   buildDraft,
   buildDynamicAttributes,
   buildEditorValidationIssues,
   buildVariantTableView,
+  collectAttributeMissing,
   collectChineseTextViolations,
   collectDraftBlockers,
   collectHiddenRequiredAttributes,
@@ -41,6 +43,8 @@ import {
   pruneDynamicValuesForCategory,
   resolveVariantItemIndex,
   resolvePrefillableAttributeValues,
+  sanitizeDictionarySelections,
+  validDictionarySelectedLabels,
   validateDraftForEditor,
   validationSectionLabel,
 } from '../apps/desktop/renderer/src/components/Ozon/ozonEditorUtils';
@@ -681,7 +685,7 @@ describe('ozon editor utils', () => {
         ],
         { confirmed: true, dimensions: [], variants: [] },
       );
-      const breakdown = validateDraftForEditor(form({ name: '', price: '0' }), task.draft, task.draft.items, {}, [], [], '');
+      const breakdown = validateDraftForEditor(form({ name: '', price: '0' }), task.draft, task.draft.items, {}, {}, [], [], '');
       expect(breakdown.main).toContain('俄语标题');
       expect(breakdown.variants).toContain('SKU 2 主图');
       expect(breakdown.main).toContain('价格');
@@ -692,7 +696,7 @@ describe('ozon editor utils', () => {
 
     it('keeps payload-only invariants that no section reports', () => {
       const task = makeTask([baseItem({ price: '0' })]);
-      const breakdown = validateDraftForEditor(form(), task.draft, task.draft.items, {}, [], [], '');
+      const breakdown = validateDraftForEditor(form(), task.draft, task.draft.items, {}, {}, [], [], '');
       expect(breakdown.main).not.toContain('价格');
       expect(breakdown.variants).not.toContain('价格');
       expect(breakdown.payloadOnly).toEqual(['价格']);
@@ -1123,6 +1127,104 @@ describe('ozon editor utils', () => {
       const attrs = [catAttr(100, '材质', 0, true), catAttr(200, '季节', 0, true), catAttr(300, '风格', 0, false)];
       const missing = filterMissingRequiredAttributes(attrs, { '100': 'x', '200': 'y', '300': '' });
       expect(missing).toEqual([]);
+    });
+  });
+
+  describe('dictionary integrity (TEST-06..09)', () => {
+    it('mount sanitize drops text-only dictionary values from dynamicValues (TEST-06)', () => {
+      const meta = [catAttr(100, '类型', 9000, true), catAttr(200, '材质', 0, false)];
+      const sanitized = sanitizeDictionarySelections(
+        { '100': '长袖打底衫', '200': '棉' },
+        {},
+        meta,
+      );
+      expect(sanitized).toEqual({ '200': '棉' });
+      const kept = sanitizeDictionarySelections(
+        { '100': '双面德绒打底衫', '200': '棉' },
+        { '100': { 双面德绒打底衫: 123456 } },
+        meta,
+      );
+      expect(kept).toEqual({ '100': '双面德绒打底衫', '200': '棉' });
+    });
+
+    it('validDictionarySelectedLabels only counts labels with a real id (TEST-07)', () => {
+      expect(validDictionarySelectedLabels('长袖打底衫', {})).toEqual([]);
+      expect(validDictionarySelectedLabels('双面德绒打底衫', { 双面德绒打底衫: 123 })).toEqual(['双面德绒打底衫']);
+      expect(validDictionarySelectedLabels('长袖打底衫\n双面德绒打底衫', { 双面德绒打底衫: 123 })).toEqual(['双面德绒打底衫']);
+      expect(validDictionarySelectedLabels('', {})).toEqual([]);
+    });
+
+    it('buildDraft drops text-only dictionary values and keeps real-id selections (TEST-08)', () => {
+      const meta = [catAttr(100, '类型', 9000, true)];
+      const textOnly = makeTask([baseItem({ attributes: [attr(100, '长袖打底衫')] })]);
+      const result = buildDraft(textOnly, form(), {}, meta, {}, meta, {}, { attributeMetadataReady: true });
+      expect(result).not.toBeNull();
+      const textOnlyAttrs = result!.firstItem.attributes as Array<Record<string, unknown>>;
+      expect(textOnlyAttrs.some((item) => Number(item.id) === 100)).toBe(false);
+      expect(result!.missing).toContain('类型');
+
+      const withId = makeTask([baseItem({ attributes: [attr(100, '双面德绒打底衫', 123456)] })]);
+      const filled = buildDraft(
+        withId,
+        form(),
+        { '100': '双面德绒打底衫' },
+        meta,
+        { '100': { 双面德绒打底衫: 123456 } },
+        meta,
+        {},
+        { attributeMetadataReady: true },
+      );
+      expect(filled).not.toBeNull();
+      const filledAttrs = filled!.firstItem.attributes as Array<Record<string, unknown>>;
+      const typeAttr = filledAttrs.find((item) => Number(item.id) === 100);
+      expect(typeAttr).toBeTruthy();
+      expect(typeAttr!.values).toEqual([{ dictionary_value_id: 123456, value: '双面德绒打底衫' }]);
+      expect(filled!.missing).not.toContain('类型');
+    });
+
+    it('non-dictionary free text is untouched and dictionary brand requires a real id (TEST-09)', () => {
+      const freeText = buildDynamicAttributes(
+        { '100': 'ABC-123' },
+        [catAttr(100, '货号', 0, false)],
+        {},
+      );
+      expect(freeText).toEqual([{ id: 100, complex_id: 0, values: [{ value: 'ABC-123' }] }]);
+      const missing = collectAttributeMissing(
+        form(),
+        { '100': 'ABC-123' },
+        [catAttr(100, '货号', 0, true)],
+        {},
+      );
+      expect(missing).not.toContain('货号');
+      expect(buildCategoryAwareAttribute(catAttr(100, '货号', 0), 'ABC-123'))
+        .toEqual({ id: 100, complex_id: 0, values: [{ value: 'ABC-123' }] });
+
+      const dictBrand = buildAttributes(
+        baseItem(),
+        form({ brand: 'MyBrand' }),
+        {},
+        [catAttr(ATTR_BRAND, 'Бренд', 8000, true)],
+        {},
+      );
+      expect(dictBrand.find((item) => Number(item.id) === ATTR_BRAND)).toBeUndefined();
+      const dictBrandWithId = buildAttributes(
+        baseItem(),
+        form({ brand: 'NO NAME' }),
+        {},
+        [catAttr(ATTR_BRAND, 'Бренд', 8000, true)],
+        { [String(ATTR_BRAND)]: { 'NO NAME': 999 } },
+      );
+      expect(dictBrandWithId.find((item) => Number(item.id) === ATTR_BRAND)!.values)
+        .toEqual([{ dictionary_value_id: 999, value: 'NO NAME' }]);
+      const freeTextBrand = buildAttributes(
+        baseItem(),
+        form({ brand: 'MyBrand' }),
+        {},
+        [catAttr(ATTR_BRAND, 'Бренд', 0, true)],
+        {},
+      );
+      expect(freeTextBrand.find((item) => Number(item.id) === ATTR_BRAND)!.values)
+        .toEqual([{ value: 'MyBrand' }]);
     });
   });
 });

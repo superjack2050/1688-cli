@@ -1499,11 +1499,21 @@ async function fillCategoryAttributes(settings, sourceRows, normalized) {
     const resolved = [];
     const pushResolved = (attr, valueText, dictId, src) => {
       if (!cleanText(valueText)) return;
+      const isDict = Number(attr.dictionaryId || 0) > 0;
+      const numericId = Number(dictId || 0);
+      // Dictionary attributes only count as filled with a REAL
+      // dictionary_value_id. Text-only fallbacks are dropped here so they
+      // can never reach the draft (second line of defense after the
+      // resolve-failure branch above).
+      if (isDict && numericId <= 0) {
+        log(`[ozon-draft:dict] DROP unresolved dictionary attrId=${attr.id} attrName=${attr.name} source=${src} query=${cleanText(valueText)}`);
+        return;
+      }
       resolved.push({
         attribute_id: attr.id,
         value_text: cleanText(valueText),
-        dictionary_value_id: dictId || null,
-        confidence: dictId ? 0.9 : 0.5,
+        dictionary_value_id: isDict ? numericId : null,
+        confidence: numericId ? 0.9 : 0.5,
         _source: src,
       });
     };
@@ -1513,7 +1523,8 @@ async function fillCategoryAttributes(settings, sourceRows, normalized) {
       if (attr.dictionaryId) {
         const result = await resolveDictValueWithFallback(userDataPath, descId, typeId, attr, value, log);
         if (result) pushResolved(attr, result.label, result.id, 'builtin');
-        else pushResolved(attr, value, 0, 'builtin-nodict');
+        // Resolve failure: the attribute stays EMPTY. Raw 1688 text is
+        // never a valid Ozon dictionary value.
       } else {
         pushResolved(attr, value, null, 'builtin');
       }
@@ -1530,7 +1541,8 @@ async function fillCategoryAttributes(settings, sourceRows, normalized) {
         if (query) {
           const result = await resolveDictValueWithFallback(userDataPath, descId, typeId, attr, query, log);
           if (result) pushResolved(attr, result.label, result.id, 'ai');
-          else pushResolved(attr, s.value_text, 0, 'ai-nodict');
+          // Resolve failure: stay empty. AI text is a search hint, not a
+          // dictionary value.
         }
       } else {
         pushResolved(attr, s.value_text, null, 'ai');
@@ -1570,7 +1582,7 @@ async function completeOzonDraftItems(settings, sourceRows, normalized, items) {
   const requiredFillableAttrs = fillableAttrs.filter((attr) => attr.isRequired === true);
 
   // Step 1: apply generated attribute_values to all items
-  applyGeneratedAttributeValuesToItems(items, normalized.attribute_values);
+  applyGeneratedAttributeValuesToItems(items, normalized.attribute_values, allAttrs);
 
   // Step 2: apply backend defaults (origin country, brand, weight)
   await applyBackendDefaultsToItems(settings, userDataPath, descId, typeId, sourceRows, items, requiredFillableAttrs, allAttrs);
@@ -1589,7 +1601,7 @@ async function completeOzonDraftItems(settings, sourceRows, normalized, items) {
         settings, userDataPath, descId, typeId, suggestions, fillableAttrs,
       );
 
-      applyGeneratedAttributeValuesToItems(items, resolved);
+      applyGeneratedAttributeValuesToItems(items, resolved, allAttrs);
       mergedValues = mergeAttributeValues(mergedValues, resolved);
     } catch (err) {
       process.stderr.write(`[ozon-draft] retry round ${attempt} failed: ${err?.message || err}\n`);
@@ -1602,8 +1614,8 @@ async function completeOzonDraftItems(settings, sourceRows, normalized, items) {
   return { ok: missingRequired.length === 0, missing: missingRequired.map((a) => a.name || String(a.id)) };
 }
 
-function applyGeneratedAttributeValuesToItems(items, attributeValues) {
-  const values = Array.isArray(attributeValues) ? attributeValues : [];
+function applyGeneratedAttributeValuesToItems(items, attributeValues, categoryAttributes) {
+  const values = sanitizeGeneratedAttributeValues(attributeValues, categoryAttributes);
   for (const item of items) {
     if (!item || typeof item !== 'object') continue;
     const attrs = Array.isArray(item.attributes) ? item.attributes : [];
@@ -1612,14 +1624,55 @@ function applyGeneratedAttributeValuesToItems(items, attributeValues) {
   }
 }
 
-function missingRequiredCategoryAttributes(item, requiredAttrs) {
-  const attrs = Array.isArray(item?.attributes) ? item.attributes : [];
-  const existingIds = new Set(
-    attrs.filter((a) => Array.isArray(a.values) && a.values.length > 0).map((a) => Number(a.id)).filter(Boolean),
+// Unified gate for every generated attribute value entering draft items.
+// Dictionary attributes (attr.dictionaryId > 0) are only valid with a real
+// dictionary_value_id; text-only values are dropped. Non-dictionary values
+// must keep a non-empty text.
+function sanitizeGeneratedAttributeValues(attributeValues, categoryAttributes) {
+  const metaById = new Map(
+    (Array.isArray(categoryAttributes) ? categoryAttributes : [])
+      .filter((attr) => Number(attr?.id || 0) > 0)
+      .map((attr) => [Number(attr.id), attr]),
   );
-  return requiredAttrs.filter((a) => {
+  return (Array.isArray(attributeValues) ? attributeValues : []).filter((raw) => {
+    const value = raw && typeof raw === 'object' ? raw : {};
+    const attrId = Number(value.attribute_id || value.id || 0);
+    if (!attrId) return false;
+    const meta = metaById.get(attrId) || {};
+    const isDict = Number(meta.dictionaryId || 0) > 0;
+    const textValue = cleanText(value.value_text || value.value || '');
+    const dictId = Number(value.dictionary_value_id || value.dictionaryValueId || 0);
+    if (isDict) return dictId > 0;
+    return Boolean(textValue) || dictId > 0;
+  });
+}
+
+function missingRequiredCategoryAttributes(item, requiredAttrs) {
+  const attrs = Array.isArray(requiredAttrs) ? requiredAttrs : [];
+  return attrs.filter((a) => {
     const id = Number(a.id || 0);
-    return id > 0 && !CONTROLLED_ATTR_IDS.has(id) && !existingIds.has(id);
+    return id > 0 && !CONTROLLED_ATTR_IDS.has(id) && !itemHasValidCategoryAttribute(item, a);
+  });
+}
+
+// A category attribute is only "filled" when it carries a usable value:
+// dictionary attributes need at least one real dictionary_value_id (> 0),
+// free-text attributes need a non-empty text value.
+function itemHasValidCategoryAttribute(item, attrMeta) {
+  const attrId = Number(attrMeta?.id || 0);
+  if (!attrId) return false;
+  const attrs = Array.isArray(item?.attributes) ? item.attributes : [];
+  const raw = attrs.find((a) => Number(a.id) === attrId);
+  if (!raw) return false;
+  const values = Array.isArray(raw.values) ? raw.values : [];
+  if (!values.length) return false;
+  const isDict = Number(attrMeta?.dictionaryId || 0) > 0;
+  return values.some((v) => {
+    const value = v && typeof v === 'object' ? v : {};
+    if (isDict) {
+      return Number(value.dictionary_value_id || value.dictionaryValueId || 0) > 0;
+    }
+    return Boolean(cleanText(value.value || value.value_text || ''));
   });
 }
 
@@ -1627,14 +1680,26 @@ async function applyBackendDefaultsToItems(settings, userDataPath, descId, typeI
   // Origin country → 中国
   for (const attr of fillableAttrs) {
     if (/原产国|制造国|country|страна/.test((attr.name || '').toLowerCase())) {
+      const isDict = Number(attr.dictionaryId || 0) > 0;
+      if (!isDict) {
+        for (const item of items) {
+          if (!item || typeof item !== 'object') continue;
+          const attrs = Array.isArray(item.attributes) ? item.attributes : [];
+          attrs.push(buildSingleAttributeEntry(attr.id, '中国', 0));
+          item.attributes = attrs;
+        }
+        break;
+      }
       const resolved = await resolveSingleDictionaryValue(settings, userDataPath, descId, typeId, attr, '中国');
-      const valueText = resolved ? resolved.value_text : '中国';
-      const dictId = resolved ? resolved.dictionary_value_id : 0;
-      for (const item of items) {
-        if (!item || typeof item !== 'object') continue;
-        const attrs = Array.isArray(item.attributes) ? item.attributes : [];
-        attrs.push(buildSingleAttributeEntry(attr.id, valueText, dictId));
-        item.attributes = attrs;
+      if (resolved && resolved.dictionary_value_id > 0) {
+        for (const item of items) {
+          if (!item || typeof item !== 'object') continue;
+          const attrs = Array.isArray(item.attributes) ? item.attributes : [];
+          attrs.push(buildSingleAttributeEntry(attr.id, resolved.value_text, resolved.dictionary_value_id));
+          item.attributes = attrs;
+        }
+      } else {
+        process.stderr.write(`[ozon-draft:dict] DROP unresolved dictionary attrId=${attr.id} attrName=${attr.name} source=default query=中国\n`);
       }
       break;
     }
@@ -2121,4 +2186,4 @@ function normalizeAttributeSuggestions(data, categoryAttributes) {
   };
 }
 
-module.exports = { generateOzonDraft, submitOzonDraft, collectDraftMissing, generateOzonAttributeSuggestions };
+module.exports = { generateOzonDraft, submitOzonDraft, collectDraftMissing, generateOzonAttributeSuggestions, sanitizeGeneratedAttributeValues };

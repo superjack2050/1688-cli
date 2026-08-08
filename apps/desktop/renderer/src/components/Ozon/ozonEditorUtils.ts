@@ -219,6 +219,43 @@ export function lineList(value: string): string[] {
   );
 }
 
+/**
+ * Dictionary selections only count when they carry a real
+ * dictionary_value_id (> 0). Text-only lines are not selected: they are
+ * either a stale historical value or an unresolved search hint.
+ */
+export function validDictionarySelectedLabels(value: string, valueIds: Record<string, number>): string[] {
+  const ids = valueIds || {};
+  return lineList(value).filter((label) => Number(ids[label] || 0) > 0);
+}
+
+/**
+ * Drop dictionary selections that have no real dictionary_value_id from
+ * dynamicValues. Free-text (non-dictionary) values are never touched.
+ * Controlled attributes (brand/model/...) are NOT part of dynamicValues, so
+ * they are unaffected. Values for attributes not present in the current
+ * category metadata are kept unchanged (pruning is a separate concern).
+ */
+export function sanitizeDictionarySelections(
+  dynamicValues: Record<string, string>,
+  dictionaryValueIds: DictionaryValueIds,
+  categoryAttributes: Array<{ id: number; dictionaryId?: number }>,
+): Record<string, string> {
+  const metaById = new Map(categoryAttributes.map((attr) => [Number(attr.id), attr]));
+  const next: Record<string, string> = {};
+  for (const [rawId, value] of Object.entries(dynamicValues)) {
+    const attrId = Number(rawId);
+    const meta = metaById.get(attrId);
+    if (!meta || Number(meta.dictionaryId || 0) <= 0) {
+      next[rawId] = value;
+      continue;
+    }
+    const valid = validDictionarySelectedLabels(value, dictionaryValueIds[rawId] || {});
+    if (valid.length) next[rawId] = valid.join('\n');
+  }
+  return next;
+}
+
 export function normalizeImageUrl(value: string): string {
   const url = value.trim();
   if (!url) return '';
@@ -329,6 +366,32 @@ export function buildAttribute(attrId: number, value: string, dictionaryIds?: Re
 }
 
 /**
+ * Dictionary attributes are only built with real dictionary_value_id
+ * entries; text-only lines are dropped (returning null when nothing valid
+ * remains). Free-text attributes fall back to buildAttribute.
+ */
+export function buildCategoryAwareAttribute(
+  attr: { id: number; dictionaryId?: number },
+  value: string,
+  dictionaryIds?: Record<string, number>,
+): Record<string, unknown> | null {
+  if (Number(attr.dictionaryId || 0) > 0) {
+    const ids = dictionaryIds || {};
+    const lines = lineList(value).filter((label) => Number(ids[label] || 0) > 0);
+    if (!lines.length) return null;
+    return {
+      id: attr.id,
+      complex_id: 0,
+      values: lines.map((label) => ({
+        dictionary_value_id: Number(ids[label]),
+        value: label,
+      })),
+    };
+  }
+  return buildAttribute(attr.id, value, dictionaryIds);
+}
+
+/**
  * Attributes that carry a single opaque value (e.g. Rich Content JSON) must
  * never be split on newlines. The whole trimmed string is one value.
  */
@@ -430,11 +493,12 @@ export function parseCustomAttributesDetailed(
 
 export function buildDynamicAttributes(
   dynamicValues: Record<string, string>,
-  categoryAttributes: Array<{ id: number }>,
+  categoryAttributes: Array<{ id: number; dictionaryId?: number }>,
   dictionaryValueIds: DictionaryValueIds,
   allowUnknownCategoryAttributes = false,
 ): Record<string, unknown>[] {
   const knownIds = new Set(categoryAttributes.map((attr) => attr.id));
+  const metaById = new Map(categoryAttributes.map((attr) => [Number(attr.id), attr]));
   // When category metadata is unknown (not loaded / load failed), carrying
   // stale dynamic attributes from a previous category is unsafe: the editor
   // must not build them into a submittable payload.
@@ -446,7 +510,10 @@ export function buildDynamicAttributes(
     const attrId = Number(rawId);
     if (!attrId || CONTROLLED_ATTR_IDS.has(attrId) || seen.has(attrId)) continue;
     if (knownIds.size > 0 && !knownIds.has(attrId)) continue;
-    const attr = buildAttribute(attrId, value, dictionaryValueIds[String(attrId)]);
+    const meta = metaById.get(attrId);
+    const attr = meta
+      ? buildCategoryAwareAttribute(meta, value, dictionaryValueIds[String(attrId)])
+      : buildAttribute(attrId, value, dictionaryValueIds[String(attrId)]);
     if (!attr) continue;
     attrs.push(attr);
     seen.add(attrId);
@@ -476,7 +543,7 @@ export function buildAttributes(
   baseItem: Record<string, unknown>,
   form: DraftForm,
   dynamicValues: Record<string, string>,
-  categoryAttributes: Array<{ id: number }>,
+  categoryAttributes: Array<{ id: number; dictionaryId?: number }>,
   dictionaryValueIds: DictionaryValueIds,
   options: BuildAttributesOptions = {},
 ): Record<string, unknown>[] {
@@ -487,6 +554,7 @@ export function buildAttributes(
   const customIds = new Set(customAttrs.map((attr) => Number(attr.id)).filter(Boolean));
   const dynamicIds = new Set(dynamicAttrs.map((attr) => Number(attr.id)).filter(Boolean));
   const categoryIds = new Set(categoryAttributes.map((attr) => attr.id));
+  const metaById = new Map(categoryAttributes.map((attr) => [Number(attr.id), attr]));
   const baseAttrs = Array.isArray(baseItem.attributes) ? baseItem.attributes : [];
   const preserved = baseAttrs
     .map(objectOf)
@@ -499,7 +567,18 @@ export function buildAttributes(
       // (attributes=[]) must NOT preserve stale attributes from a previous
       // category; unknown metadata must not leak them into the draft either.
       if (!attributeMetadataReady) return false;
-      return categoryIds.has(attrId);
+      if (!categoryIds.has(attrId)) return false;
+      // Dictionary attributes are only preserved with a REAL
+      // dictionary_value_id; text-only historical values never survive.
+      const meta = metaById.get(attrId);
+      if (meta && Number(meta.dictionaryId || 0) > 0) {
+        const values = Array.isArray(attr.values) ? attr.values : [];
+        return values.some((v) => {
+          const value = objectOf(v);
+          return Number(value.dictionary_value_id || value.dictionaryValueId || 0) > 0;
+        });
+      }
+      return true;
     });
 
   const productNameAttr = categoryIds.has(ATTR_PRODUCT_NAME)
@@ -507,9 +586,15 @@ export function buildAttributes(
     : null;
   const richContent = normalizeRichContentJson(form.richContent);
   const weight = measurementIntegerForPayload(form.weight);
+  // Brand is a controlled dictionary attribute in most categories: it only
+  // counts as filled with a real dictionary_value_id.
+  const brandMeta = categoryAttributes.find((attr) => Number(attr.id) === ATTR_BRAND);
+  const brandAttr = brandMeta && Number(brandMeta.dictionaryId || 0) > 0
+    ? buildCategoryAwareAttribute(brandMeta, form.brand, dictionaryValueIds[String(ATTR_BRAND)])
+    : buildAttribute(ATTR_BRAND, form.brand, dictionaryValueIds[String(ATTR_BRAND)]);
   const controlled = [
     productNameAttr,
-    buildAttribute(ATTR_BRAND, form.brand, dictionaryValueIds[String(ATTR_BRAND)]),
+    brandAttr,
     buildAttribute(ATTR_MODEL, form.model),
     buildAttribute(ATTR_WEIGHT, String(weight)),
     buildAttribute(ATTR_DESCRIPTION, form.description),
@@ -638,13 +723,25 @@ export function pruneDynamicValuesForCategory(
 export function collectAttributeMissing(
   form: DraftForm,
   dynamicValues: Record<string, string>,
-  attrs: Array<{ id: number; isRequired: boolean; name: string }>,
+  attrs: Array<{ id: number; isRequired: boolean; name: string; dictionaryId?: number }>,
+  dictionaryValueIds: DictionaryValueIds,
 ): string[] {
   const missing: string[] = [];
   if (!form.model.trim()) missing.push('型号名称');
   for (const attr of attrs) {
     if (!attr.isRequired) continue;
-    if (!text(dynamicValues[String(attr.id)])) missing.push(attr.name || `属性 ${attr.id}`);
+    const value = text(dynamicValues[String(attr.id)]);
+    if (!value) {
+      missing.push(attr.name || `属性 ${attr.id}`);
+      continue;
+    }
+    // Dictionary attributes need at least one REAL dictionary_value_id:
+    // a text-only value is still missing.
+    if (Number(attr.dictionaryId || 0) > 0) {
+      const ids = dictionaryValueIds[String(attr.id)] || {};
+      const hasValid = lineList(value).some((label) => Number(ids[label] || 0) > 0);
+      if (!hasValid) missing.push(attr.name || `属性 ${attr.id}`);
+    }
   }
   return unique(missing);
 }
@@ -1035,6 +1132,7 @@ export function validateDraftForEditor(
   draft: OzonDraft,
   items: Record<string, unknown>[],
   dynamicValues: Record<string, string>,
+  dictionaryValueIds: DictionaryValueIds,
   requiredAttrs: OzonCategoryAttribute[],
   categoryAttributes: OzonCategoryAttribute[],
   attributeMetadataMessage: string,
@@ -1048,7 +1146,7 @@ export function validateDraftForEditor(
     ...chinese.main,
   ]);
   const attributes = unique([
-    ...collectAttributeMissing(form, dynamicValues, requiredAttrs.filter((attr) => !unsupportedMediaIds.has(attr.id))),
+    ...collectAttributeMissing(form, dynamicValues, requiredAttrs.filter((attr) => !unsupportedMediaIds.has(attr.id)), dictionaryValueIds),
     ...collectDraftBlockers(form, categoryAttributes),
     ...chinese.attributes,
     ...unsupportedMedia.map((attr) => `该 Ozon 类目要求媒体属性 ${attr.name}，当前编辑器暂不支持直接填写，请勿提交。`),
@@ -1292,6 +1390,7 @@ export function buildDraft(
     nextDraft,
     nextItems,
     dynamicValues,
+    dictionaryValueIds,
     requiredAttrs as OzonCategoryAttribute[],
     categoryAttributes as OzonCategoryAttribute[],
     attributeMetadataMessage,
