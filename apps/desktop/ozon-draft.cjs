@@ -313,7 +313,20 @@ async function prepareOzonImportItems(settings, items) {
     const key = `${Number(importItem.description_category_id || 0)}:${Number(importItem.type_id || 0)}`;
     const metaById = metaByCategory[key] || {};
 
+    // Track the internal hashtag source id before normalization so the
+    // diagnostic log can show the source -> target remap (ids/counts only).
+    const rawHashtagIds = (importItem.attributes || [])
+      .filter((a) => isHashtagAttribute(a.id, metaById[String(a.id)] || {}))
+      .map((a) => a.id);
+
     importItem.attributes = normalizeAttributesForOzonImport(importItem.attributes, metaById);
+
+    const hashtagAttr = (importItem.attributes || []).find((a) => isHashtagAttribute(a.id, metaById[String(a.id)] || {}));
+    if (hashtagAttr) {
+      const tagCount = (Array.isArray(hashtagAttr.values) ? hashtagAttr.values : [])
+        .reduce((n, v) => n + countHashtagsInValue(v?.value), 0);
+      process.stderr.write(`[ozon-submit:hashtag] offer_id=${importItem.offer_id} source_attr_id=${rawHashtagIds[0] ?? '-'} target_attr_id=${hashtagAttr.id} tag_count=${tagCount}\n`);
+    }
 
     importItem.name = cleanText(importItem.name).slice(0, 500);
     if (hasSuspiciousTitleStructure(importItem.name)) {
@@ -391,19 +404,27 @@ function normalizeAttributesForOzonImport(attributes, metaById) {
     const id = Number(attr.id || attr.attribute_id || 0);
     if (!id) continue;
 
-    // Hashtag attributes (23171/22508) cause repeated Ozon audit warnings
-    // about "advertising/promotional" content. Drop them from the import payload.
-    if (KNOWN_HASHTAG_ATTR_IDS.has(id)) continue;
+    // Hashtags use an internal semantic id (23171) that may not match the
+    // current category. Resolve the REAL hashtag attribute from the current
+    // category metadata; when the category has no hashtag attribute the
+    // tags are dropped WITHOUT failing the whole product.
+    let effectiveId = id;
+    let meta = metaById[id] || {};
+    if (isHashtagAttribute(id, meta)) {
+      const hashtagMeta = resolveHashtagMeta(metaById, id);
+      if (!hashtagMeta) continue;
+      effectiveId = Number(hashtagMeta.id);
+      meta = hashtagMeta;
+    }
 
-    const meta = metaById[id] || {};
     const complexId = Number(attr.complex_id || attr.complexId || meta.attributeComplexId || 0) || 0;
-    const key = `${id}:${complexId}`;
+    const key = `${effectiveId}:${complexId}`;
 
-    const values = normalizeAttributeValuesForOzonImport(attr.values, meta, id);
+    const values = normalizeAttributeValuesForOzonImport(attr.values, meta, effectiveId);
     if (!values.length) continue;
 
     if (!grouped.has(key)) {
-      grouped.set(key, { id, complex_id: complexId, values: [] });
+      grouped.set(key, { id: effectiveId, complex_id: complexId, values: [] });
     }
     grouped.get(key).values.push(...values);
   }
@@ -423,6 +444,19 @@ function normalizeAttributesForOzonImport(attributes, metaById) {
 }
 
 function normalizeAttributeValuesForOzonImport(values, meta, attrId) {
+  if (isHashtagAttribute(attrId, meta)) {
+    // Aggregate ALL tag lines into ONE Ozon hashtag value string:
+    // "#a #b #c" (deduped, max 20 tags, each <= 30 chars). This is the
+    // single place where normalizeHashtagList() runs during submit.
+    const sources = (Array.isArray(values) ? values : []).map((raw) => {
+      const valueObj = raw && typeof raw === 'object' ? raw : { value: raw };
+      return valueObj.value;
+    });
+    const normalized = normalizeHashtagList(sources);
+    if (!normalized) return [];
+    return [{ value: normalized }];
+  }
+
   const out = [];
   for (const raw of Array.isArray(values) ? values : []) {
     const valueObj = raw && typeof raw === 'object' ? raw : { value: raw };
@@ -470,6 +504,22 @@ function isHashtagAttribute(attrId, meta) {
   if (KNOWN_HASHTAG_ATTR_IDS.has(id)) return true;
   const name = `${meta.name || ''}`.toLowerCase();
   return /hashtag|хештег|хэштег|тег|标签|主题标签/.test(name);
+}
+
+function resolveHashtagMeta(metaById, sourceAttrId) {
+  const direct = metaById[String(sourceAttrId)];
+  if (direct && isHashtagAttribute(sourceAttrId, direct)) return direct;
+
+  const metas = Object.values(metaById || {});
+  const candidates = metas.filter((meta) => isHashtagAttribute(Number(meta.id), meta));
+  if (!candidates.length) return null;
+  if (candidates.length === 1) return candidates[0];
+
+  const required = candidates.find((meta) => meta.isRequired === true);
+  if (required) return required;
+
+  const known = candidates.find((meta) => KNOWN_HASHTAG_ATTR_IDS.has(Number(meta.id)));
+  return known || candidates[0];
 }
 
 function sanitizeHashtagCore(value) {
@@ -546,6 +596,12 @@ function normalizeHashtagList(tags) {
 
 function normalizeHashtagString(value) {
   return normalizeHashtagList([value]);
+}
+
+function countHashtagsInValue(value) {
+  const text = cleanText(value);
+  if (!text) return 0;
+  return text.split(/\s+/).filter((t) => t.startsWith('#')).length;
 }
 
 function isValidOzonHashtagValue(value) {
@@ -1249,8 +1305,9 @@ function buildOzonItem(row, generated, settings, index) {
   const attrs = [];
   addAttribute(attrs, ATTR_MODEL_NAME, generated.model_name || generated.title_ru);
   addAttribute(attrs, ATTR_DESCRIPTION, generated.description_ru);
-  // hashtag attributes (23171/22508) are no longer submitted to Ozon —
-  // they cause repeated "advertising/promotional" audit warnings.
+  // Hashtags stay in generated.tags / editor state.
+  // Final Ozon hashtag attribute id is resolved against
+  // current category metadata during import normalization.
   // Merge backend-generated category attributes into item.attributes
   addGeneratedCategoryAttributes(attrs, generated);
   return {

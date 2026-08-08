@@ -694,4 +694,272 @@ describe('ozon draft submit helper', () => {
       }
     });
   });
+
+  describe('hashtag integrity (TEST-01..10)', () => {
+    function hashtagDraftItem(tags: Array<Record<string, unknown>> | string[]) {
+      return baseItem({
+        attributes: [
+          { id: 9048, values: [{ value: 'model' }] },
+          { id: 23171, values: tags.map((raw) => ({ value: typeof raw === 'string' ? raw : raw.value })) },
+        ],
+      });
+    }
+
+    function importBodyOf(fetchMock: ReturnType<typeof vi.mocked<typeof fetch>>) {
+      const importCall = fetchMock.mock.calls.find((call) => endpointOf(call) === '/v3/product/import');
+      return JSON.parse(String((importCall?.[1] as RequestInit).body || '{}')) as {
+        items: Array<{ offer_id: string; attributes: Array<{ id: number; values: Array<{ value?: string }> }> }>;
+      };
+    }
+
+    it('submits internal 23171 tags to the real metadata id 23171 (TEST-01)', async () => {
+      const fetchMock = vi.mocked(fetch);
+      fetchMock
+        .mockResolvedValueOnce(categoryMeta([
+          { id: 9048, name: '型号', is_required: false },
+          { id: 23171, name: '#主题标签', is_required: false },
+        ]))
+        .mockResolvedValueOnce(ok({ result: { task_id: 8844 } }) as Response)
+        .mockResolvedValueOnce(ok({ result: { items: [{ offer_id: 'offer-1', status: 'imported' }] } }) as Response);
+
+      const result = await submitOzonDraft(settings, baseDraft({
+        items: [hashtagDraftItem(['фигурка халкбастера', 'мстители фигурка'])],
+      }), { pollDelayMs: 0 });
+
+      expect(result.importStatus).toBe('imported');
+      const body = importBodyOf(fetchMock);
+      const tagAttr = body.items[0].attributes.find((a) => Number(a.id) === 23171);
+      expect(tagAttr).toBeTruthy();
+      expect(tagAttr!.values).toHaveLength(1);
+      const value = String(tagAttr!.values[0].value);
+      expect(value).toContain('#фигурка_халкбастера');
+      expect(value).toContain('#мстители_фигурка');
+    });
+
+    it('remaps internal 23171 tags to metadata id 22508 (TEST-02)', async () => {
+      const fetchMock = vi.mocked(fetch);
+      fetchMock
+        .mockResolvedValueOnce(categoryMeta([
+          { id: 9048, name: '型号', is_required: false },
+          { id: 22508, name: '#主题标签', is_required: false },
+        ]))
+        .mockResolvedValueOnce(ok({ result: { task_id: 8844 } }) as Response)
+        .mockResolvedValueOnce(ok({ result: { items: [{ offer_id: 'offer-1', status: 'imported' }] } }) as Response);
+
+      const result = await submitOzonDraft(settings, baseDraft({
+        items: [hashtagDraftItem(['фигурка халкбастера'])],
+      }), { pollDelayMs: 0 });
+
+      expect(result.importStatus).toBe('imported');
+      const body = importBodyOf(fetchMock);
+      const attrIds = body.items[0].attributes.map((a) => Number(a.id));
+      expect(attrIds).toContain(22508);
+      expect(attrIds).not.toContain(23171);
+      const tagAttr = body.items[0].attributes.find((a) => Number(a.id) === 22508);
+      expect(String(tagAttr!.values[0].value)).toBe('#фигурка_халкбастера');
+    });
+
+    it('drops tags silently when the category has no hashtag attribute (TEST-03)', async () => {
+      const fetchMock = vi.mocked(fetch);
+      fetchMock
+        .mockResolvedValueOnce(categoryMeta([
+          { id: 9048, name: '型号', is_required: false },
+        ]))
+        .mockResolvedValueOnce(ok({ result: { task_id: 8844 } }) as Response)
+        .mockResolvedValueOnce(ok({ result: { items: [{ offer_id: 'offer-1', status: 'imported' }] } }) as Response);
+
+      const result = await submitOzonDraft(settings, baseDraft({
+        items: [hashtagDraftItem(['фигурка халкбастера'])],
+      }), { pollDelayMs: 0 });
+
+      expect(result.importStatus).toBe('imported');
+      const body = importBodyOf(fetchMock);
+      const attrIds = body.items[0].attributes.map((a) => Number(a.id));
+      expect(attrIds).not.toContain(23171);
+      expect(attrIds).not.toContain(22508);
+      expect(attrIds).toContain(9048);
+    });
+
+    it('keeps all tags in one value even with max_value_count=1 (TEST-04)', async () => {
+      const fetchMock = vi.mocked(fetch);
+      fetchMock
+        .mockResolvedValueOnce(categoryMeta([
+          { id: 9048, name: '型号', is_required: false },
+          { id: 23171, name: '#主题标签', is_required: false, max_value_count: 1 },
+        ]))
+        .mockResolvedValueOnce(ok({ result: { task_id: 8844 } }) as Response)
+        .mockResolvedValueOnce(ok({ result: { items: [{ offer_id: 'offer-1', status: 'imported' }] } }) as Response);
+
+      const tags = ['марвел', 'фигурка', 'мстители', 'халкбастер', 'коллекционная фигурка'];
+      await submitOzonDraft(settings, baseDraft({
+        items: [hashtagDraftItem(tags)],
+      }), { pollDelayMs: 0 });
+
+      const body = importBodyOf(fetchMock);
+      const tagAttr = body.items[0].attributes.find((a) => Number(a.id) === 23171);
+      const value = String(tagAttr!.values[0].value);
+      for (const expected of ['#марвел', '#фигурка', '#мстители', '#халкбастер', '#коллекционная_фигурка']) {
+        expect(value).toContain(expected);
+      }
+      expect(value.split(/\s+/)).toHaveLength(5);
+    });
+
+    it('caps the tag count at 20 (TEST-05)', async () => {
+      const fetchMock = vi.mocked(fetch);
+      fetchMock
+        .mockResolvedValueOnce(categoryMeta([
+          { id: 9048, name: '型号', is_required: false },
+          { id: 23171, name: '#主题标签', is_required: false },
+        ]))
+        .mockResolvedValueOnce(ok({ result: { task_id: 8844 } }) as Response)
+        .mockResolvedValueOnce(ok({ result: { items: [{ offer_id: 'offer-1', status: 'imported' }] } }) as Response);
+
+      const tags = Array.from({ length: 25 }, (_, i) => `тег${String(i + 1).padStart(2, '0')}`);
+      await submitOzonDraft(settings, baseDraft({
+        items: [hashtagDraftItem(tags)],
+      }), { pollDelayMs: 0 });
+
+      const body = importBodyOf(fetchMock);
+      const tagAttr = body.items[0].attributes.find((a) => Number(a.id) === 23171);
+      const tokens = String(tagAttr!.values[0].value).split(/\s+/).filter(Boolean);
+      expect(tokens).toHaveLength(20);
+    });
+
+    it('keeps every single tag within 30 chars (TEST-06)', async () => {
+      const fetchMock = vi.mocked(fetch);
+      fetchMock
+        .mockResolvedValueOnce(categoryMeta([
+          { id: 9048, name: '型号', is_required: false },
+          { id: 23171, name: '#主题标签', is_required: false },
+        ]))
+        .mockResolvedValueOnce(ok({ result: { task_id: 8844 } }) as Response)
+        .mockResolvedValueOnce(ok({ result: { items: [{ offer_id: 'offer-1', status: 'imported' }] } }) as Response);
+
+      const longTag = 'супердлинноесловоназваниедляпроверкилимитадлины';
+      await submitOzonDraft(settings, baseDraft({
+        items: [hashtagDraftItem([longTag])],
+      }), { pollDelayMs: 0 });
+
+      const body = importBodyOf(fetchMock);
+      const tagAttr = body.items[0].attributes.find((a) => Number(a.id) === 23171);
+      const tokens = String(tagAttr!.values[0].value).split(/\s+/).filter(Boolean);
+      expect(tokens).toHaveLength(1);
+      expect(tokens[0].length).toBeLessThanOrEqual(30);
+    });
+
+    it('normalizes spaces and illegal punctuation into valid hashtags (TEST-07)', async () => {
+      const fetchMock = vi.mocked(fetch);
+      fetchMock
+        .mockResolvedValueOnce(categoryMeta([
+          { id: 9048, name: '型号', is_required: false },
+          { id: 23171, name: '#主题标签', is_required: false },
+        ]))
+        .mockResolvedValueOnce(ok({ result: { task_id: 8844 } }) as Response)
+        .mockResolvedValueOnce(ok({ result: { items: [{ offer_id: 'offer-1', status: 'imported' }] } }) as Response);
+
+      await submitOzonDraft(settings, baseDraft({
+        items: [hashtagDraftItem(['Marvel figure!', 'мстители фигурка', '#Hulk-Buster'])],
+      }), { pollDelayMs: 0 });
+
+      const body = importBodyOf(fetchMock);
+      const tagAttr = body.items[0].attributes.find((a) => Number(a.id) === 23171);
+      const tokens = String(tagAttr!.values[0].value).split(/\s+/).filter(Boolean);
+      expect(tokens).toEqual(['#Marvel_figure', '#мстители_фигурка', '#Hulk_Buster']);
+      for (const token of tokens) {
+        expect(token).toMatch(/^#[\p{L}\p{N}_]+$/u);
+      }
+    });
+
+    it('deduplicates repeated tags (TEST-08)', async () => {
+      const fetchMock = vi.mocked(fetch);
+      fetchMock
+        .mockResolvedValueOnce(categoryMeta([
+          { id: 9048, name: '型号', is_required: false },
+          { id: 23171, name: '#主题标签', is_required: false },
+        ]))
+        .mockResolvedValueOnce(ok({ result: { task_id: 8844 } }) as Response)
+        .mockResolvedValueOnce(ok({ result: { items: [{ offer_id: 'offer-1', status: 'imported' }] } }) as Response);
+
+      await submitOzonDraft(settings, baseDraft({
+        items: [hashtagDraftItem(['#марвел', 'марвел', '#марвел'])],
+      }), { pollDelayMs: 0 });
+
+      const body = importBodyOf(fetchMock);
+      const tagAttr = body.items[0].attributes.find((a) => Number(a.id) === 23171);
+      expect(String(tagAttr!.values[0].value)).toBe('#марвел');
+    });
+
+    it('leaves non-hashtag attributes untouched (TEST-09)', async () => {
+      const fetchMock = vi.mocked(fetch);
+      fetchMock
+        .mockResolvedValueOnce(categoryMeta([
+          { id: 9048, name: '型号', is_required: false },
+          { id: 85, name: 'Бренд', is_required: false },
+          { id: 4191, name: 'Описание', is_required: false },
+          { id: 23171, name: '#主题标签', is_required: false },
+        ]))
+        .mockResolvedValueOnce(ok({ result: { task_id: 8844 } }) as Response)
+        .mockResolvedValueOnce(ok({ result: { items: [{ offer_id: 'offer-1', status: 'imported' }] } }) as Response);
+
+      await submitOzonDraft(settings, baseDraft({
+        items: [baseItem({
+          attributes: [
+            { id: 9048, values: [{ value: 'model' }] },
+            { id: 85, values: [{ value: 'NO NAME' }] },
+            { id: 4191, values: [{ value: 'Описание для карточки.' }] },
+            { id: 23171, values: [{ value: 'фигурка халкбастера' }] },
+          ],
+        })],
+      }), { pollDelayMs: 0 });
+
+      const body = importBodyOf(fetchMock);
+      const attrs = body.items[0].attributes;
+      const modelAttr = attrs.find((a) => Number(a.id) === 9048);
+      const brandAttr = attrs.find((a) => Number(a.id) === 85);
+      const descAttr = attrs.find((a) => Number(a.id) === 4191);
+      expect(modelAttr!.values).toEqual([{ value: 'model' }]);
+      expect(brandAttr!.values).toEqual([{ value: 'NO NAME' }]);
+      expect(descAttr!.values).toEqual([{ value: 'Описание для карточки.' }]);
+      const tagAttr = attrs.find((a) => Number(a.id) === 23171);
+      expect(String(tagAttr!.values[0].value)).toBe('#фигурка_халкбастера');
+    });
+
+    it('captures the real /v3/product/import body with remapped hashtags (TEST-10)', async () => {
+      const fetchMock = vi.mocked(fetch);
+      const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+      try {
+        fetchMock
+          .mockResolvedValueOnce(categoryMeta([
+            { id: 9048, name: '型号', is_required: false },
+            { id: 22508, name: '#主题标签', is_required: false },
+          ]))
+          .mockResolvedValueOnce(ok({ result: { task_id: 8844 } }) as Response)
+          .mockResolvedValueOnce(ok({ result: { items: [{ offer_id: 'offer-1', status: 'imported' }] } }) as Response);
+
+        const tags = ['марвел', 'фигурка', 'мстители', 'халкбастер', 'коллекционная фигурка'];
+        const result = await submitOzonDraft(settings, baseDraft({
+          items: [hashtagDraftItem(tags)],
+        }), { pollDelayMs: 0 });
+
+        expect(result.importStatus).toBe('imported');
+        const body = importBodyOf(fetchMock);
+        const attrIds = body.items[0].attributes.map((a) => Number(a.id));
+        expect(attrIds).toContain(22508);
+        expect(attrIds).not.toContain(23171);
+        expect(attrIds).toContain(9048);
+
+        const tagAttr = body.items[0].attributes.find((a) => Number(a.id) === 22508);
+        expect(tagAttr!.values).toHaveLength(1);
+        const value = String(tagAttr!.values[0].value);
+        const tokens = value.split(/\s+/).filter(Boolean);
+        expect(tokens).toHaveLength(5);
+        expect(value).toBe('#марвел #фигурка #мстители #халкбастер #коллекционная_фигурка');
+
+        const hashtagLog = stderrSpy.mock.calls.map((call) => String(call[0])).join('');
+        expect(hashtagLog).toContain('[ozon-submit:hashtag] offer_id=offer-1 source_attr_id=23171 target_attr_id=22508 tag_count=5');
+      } finally {
+        stderrSpy.mockRestore();
+      }
+    });
+  });
 });
