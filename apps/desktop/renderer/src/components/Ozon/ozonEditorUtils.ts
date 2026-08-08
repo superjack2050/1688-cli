@@ -799,6 +799,179 @@ export function collectPayloadChineseViolations(
 }
 
 /**
+ * UI locator adapter: converts the business validation breakdown into
+ * locatable issues. The validator stays the single source of truth —
+ * an issue only exists for strings present in `validation.all`.
+ */
+export type ValidationTargetExpand = 'moreAttributes' | 'advanced' | null;
+
+export type EditorValidationIssue = {
+  id: string;
+  /** canonical business message (exactly as it appears in validation.all) */
+  message: string;
+  /** human-friendly message shown in the issue list */
+  displayMessage?: string;
+  section: 'main' | 'attributes' | 'variants';
+  targetKey: string;
+  expand?: ValidationTargetExpand;
+  /** false when the target has no meaningful focusable control */
+  focus?: boolean;
+};
+
+export function validationSectionLabel(section: 'main' | 'attributes' | 'variants'): string {
+  if (section === 'main') return '主要信息';
+  if (section === 'attributes') return '产品属性';
+  return '变体设置';
+}
+
+type FixedTarget = Pick<EditorValidationIssue, 'message' | 'section' | 'targetKey' | 'displayMessage' | 'expand'>;
+
+const FIXED_VALIDATION_TARGETS: FixedTarget[] = [
+  { message: '俄语标题', section: 'main', targetKey: 'main:name', displayMessage: '俄语标题不能为空' },
+  { message: '商品标题不能包含中文', section: 'main', targetKey: 'main:name' },
+  { message: '类目和类型', section: 'main', targetKey: 'main:category', displayMessage: '请选择带 type_id 的 Ozon 末级类目' },
+  { message: '货号', section: 'main', targetKey: 'main:offerId', displayMessage: '货号不能为空' },
+  { message: '价格', section: 'main', targetKey: 'main:price', displayMessage: '价格必须大于 0' },
+  { message: '包装长度', section: 'main', targetKey: 'main:depth', displayMessage: '包装长度必须大于 0' },
+  { message: '包装宽度', section: 'main', targetKey: 'main:width', displayMessage: '包装宽度必须大于 0' },
+  { message: '包装高度', section: 'main', targetKey: 'main:height', displayMessage: '包装高度必须大于 0' },
+  { message: '含包装重量', section: 'main', targetKey: 'main:weight', displayMessage: '重量必须大于 0' },
+  { message: '品牌不能包含中文', section: 'main', targetKey: 'main:brand' },
+  { message: '型号名称', section: 'attributes', targetKey: 'attributes:model', displayMessage: '型号名称不能为空' },
+  { message: '型号名称不能包含中文', section: 'attributes', targetKey: 'attributes:model' },
+  { message: '主题标签不能包含中文', section: 'attributes', targetKey: 'attributes:tags' },
+  { message: '商品描述不能包含中文', section: 'attributes', targetKey: 'attributes:description' },
+  { message: 'Rich Content JSON 格式无效', section: 'attributes', targetKey: 'advanced:rich-content', expand: 'advanced' },
+  { message: 'Rich Content 不能包含中文', section: 'attributes', targetKey: 'advanced:rich-content', expand: 'advanced' },
+  { message: '主图', section: 'variants', targetKey: 'variant:0:image', displayMessage: '主图不能为空' },
+  { message: '规格属性映射', section: 'variants', targetKey: 'variant:mapping', displayMessage: '规格属性映射未确认' },
+];
+
+const FIXED_TARGET_BY_MESSAGE = new Map(FIXED_VALIDATION_TARGETS.map((item) => [item.message, item]));
+
+const CUSTOM_ATTR_ERROR_RE = /^属性 \d+ (缺少值|重复填写|不能包含中文|已有专用编辑字段|属于当前类目属性)/;
+const CUSTOM_LINE_ERROR_RE = /^自定义属性行格式无效/;
+const SKU_LABEL_RE = /^SKU (\d+) (名称|主图|价格)$/;
+const SKU_CELL_KEY: Record<string, string> = { '名称': 'name', '主图': 'image', '价格': 'price' };
+const MEDIA_ATTR_ERROR_RE = /^该 Ozon 类目要求媒体属性 (.+?)，当前编辑器暂不支持直接填写/;
+const METADATA_BLOCKER_RE = /^(类目属性尚未加载完成|Ozon 类目属性加载失败)/;
+
+/**
+ * Build the locatable issue list from the last validation result.
+ *
+ * Matching order: exact fixed-field map → custom attribute errors →
+ * SKU labels → unsupported media → dynamic attributes (by attr id) →
+ * category metadata blockers → section fallback. Every entry in
+ * validation.all gets exactly one issue, in the same order.
+ */
+export function buildEditorValidationIssues(
+  validation: DraftValidationBreakdown,
+  context: {
+    categoryAttributes: OzonCategoryAttribute[];
+    moreCategoryAttributes: OzonCategoryAttribute[];
+    variantRows?: VariantRowView[];
+  },
+): EditorValidationIssue[] {
+  const issues: EditorValidationIssue[] = [];
+
+  const renderedAttrs = context.moreCategoryAttributes.filter((attr) => !CONTROLLED_ATTR_IDS.has(attr.id));
+  const attrIdsByName = new Map<string, number[]>();
+  for (const attr of renderedAttrs) {
+    const ids = attrIdsByName.get(attr.name) || [];
+    ids.push(attr.id);
+    attrIdsByName.set(attr.name, ids);
+  }
+  const attrById = new Map(renderedAttrs.map((attr) => [attr.id, attr]));
+
+  const sectionFallback = (message: string, section: 'main' | 'attributes' | 'variants'): EditorValidationIssue => ({
+    id: `${section}:section:${issues.length}`,
+    message,
+    section,
+    targetKey: `section:${section}`,
+    focus: false,
+  });
+
+  const dynamicTarget = (name: string, displayMessage: string, message: string): EditorValidationIssue | null => {
+    const ids = attrIdsByName.get(name) || [];
+    if (ids.length !== 1) return null; // unknown or ambiguous name → caller decides
+    const attr = attrById.get(ids[0]);
+    if (!attr) return null;
+    return {
+      id: `attr:${attr.id}:${issues.length}`,
+      message,
+      displayMessage,
+      section: 'attributes',
+      targetKey: `attr:${attr.id}`,
+      expand: 'moreAttributes',
+    };
+  };
+
+  for (const message of validation.all) {
+    let issue: EditorValidationIssue | undefined;
+
+    const fixed = FIXED_TARGET_BY_MESSAGE.get(message);
+    if (fixed) {
+      issue = { ...fixed, id: `${fixed.targetKey}:${issues.length}`, message };
+    } else if (CUSTOM_LINE_ERROR_RE.test(message) || CUSTOM_ATTR_ERROR_RE.test(message)) {
+      issue = {
+        id: `advanced:custom:${issues.length}`,
+        message,
+        section: 'attributes',
+        targetKey: 'advanced:custom',
+        expand: 'advanced',
+      };
+    } else if (SKU_LABEL_RE.test(message)) {
+      const match = message.match(SKU_LABEL_RE)!;
+      const index = Number(match[1]) - 1;
+      const cell = SKU_CELL_KEY[match[2]];
+      issue = {
+        id: `variant:${index}:${cell}:${issues.length}`,
+        message,
+        displayMessage: cell === 'price' ? `${message}必须大于 0` : `${message}不能为空`,
+        section: 'variants',
+        targetKey: `variant:${index}:${cell}`,
+      };
+    } else {
+      const media = message.match(MEDIA_ATTR_ERROR_RE);
+      if (media) {
+        issue = dynamicTarget(media[1], message, message)
+          || sectionFallback(message, 'attributes');
+      } else if (message.endsWith('不能包含中文')) {
+        issue = dynamicTarget(message.slice(0, -'不能包含中文'.length), message, message)
+          || sectionFallback(message, 'attributes');
+      } else if (METADATA_BLOCKER_RE.test(message)) {
+        issue = sectionFallback(message, 'attributes');
+      } else {
+        const attrIds = attrIdsByName.get(message) || [];
+        if (attrIds.length === 1) {
+          const attr = attrById.get(attrIds[0])!;
+          issue = {
+            id: `attr:${attr.id}:${issues.length}`,
+            message,
+            displayMessage: `${attr.name}不能为空`,
+            section: 'attributes',
+            targetKey: `attr:${attr.id}`,
+            expand: 'moreAttributes',
+          };
+        } else {
+          // Unknown or ambiguous message: guess the section, never drop it.
+          const section = message.startsWith('SKU')
+            ? 'variants'
+            : validation.attributes.includes(message) || validation.main.includes(message)
+              ? (validation.main.includes(message) ? 'main' : 'attributes')
+              : 'variants';
+          issue = sectionFallback(message, section);
+        }
+      }
+    }
+
+    issues.push(issue!);
+  }
+
+  return issues;
+}
+
+/**
  * Single source of truth for the editor's final missing list.
  *
  * - main:      主要信息 (product page fields + 商品标题中文)

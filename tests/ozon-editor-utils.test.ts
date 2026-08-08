@@ -10,6 +10,7 @@ import {
   buildAttributes,
   buildDraft,
   buildDynamicAttributes,
+  buildEditorValidationIssues,
   buildVariantTableView,
   collectChineseTextViolations,
   collectDraftBlockers,
@@ -38,6 +39,7 @@ import {
   pruneDynamicValuesForCategory,
   resolveVariantItemIndex,
   validateDraftForEditor,
+  validationSectionLabel,
 } from '../apps/desktop/renderer/src/components/Ozon/ozonEditorUtils';
 import type { OzonListingTask } from '../apps/desktop/renderer/src/components/Results/ozonListing/types';
 import type { OzonDraft } from '../apps/desktop/renderer/src/services/api';
@@ -973,6 +975,105 @@ describe('ozon editor utils', () => {
       expect(collectDraftBlockers(withChinese, [])).toEqual([]);
       const brokenJson = form({ name: '纯棉 футболка', richContent: '{oops' });
       expect(collectDraftBlockers(brokenJson, [])).toContain('Rich Content JSON 格式无效');
+    });
+  });
+
+  describe('buildEditorValidationIssues locator (TEST-01..07)', () => {
+    function validation(
+      buckets: { main?: string[]; attributes?: string[]; variants?: string[]; payload?: string[] },
+    ) {
+      const main = buckets.main || [];
+      const attributes = buckets.attributes || [];
+      const variants = buckets.variants || [];
+      const payload = buckets.payload || [];
+      const all = Array.from(new Set([...main, ...attributes, ...variants, ...payload]));
+      const payloadOnly = payload.filter((error) => !all.includes(error));
+      return { main, attributes, variants, payload, payloadOnly, all };
+    }
+
+    it('maps fixed main-field messages to concrete targets (TEST-01)', () => {
+      const result = validation({ main: ['价格', '含包装重量', '货号', '包装长度', '包装宽度', '包装高度'] });
+      const issues = buildEditorValidationIssues(result, { categoryAttributes: [], moreCategoryAttributes: [] });
+      expect(issues.map((issue) => issue.targetKey)).toEqual([
+        'main:price', 'main:weight', 'main:offerId', 'main:depth', 'main:width', 'main:height',
+      ]);
+      expect(issues[0].displayMessage).toBe('价格必须大于 0');
+      expect(issues[0].section).toBe('main');
+    });
+
+    it('routes Chinese title to the title field (TEST-02)', () => {
+      const result = validation({ main: ['商品标题不能包含中文'] });
+      const issues = buildEditorValidationIssues(result, { categoryAttributes: [], moreCategoryAttributes: [] });
+      expect(issues[0].targetKey).toBe('main:name');
+      expect(issues[0].message).toBe('商品标题不能包含中文');
+    });
+
+    it('routes model and tags messages to the fixed attribute fields (TEST-03)', () => {
+      const result = validation({ attributes: ['型号名称', '型号名称不能包含中文', '主题标签不能包含中文', '商品描述不能包含中文'] });
+      const issues = buildEditorValidationIssues(result, { categoryAttributes: [], moreCategoryAttributes: [] });
+      expect(issues.map((issue) => issue.targetKey)).toEqual([
+        'attributes:model', 'attributes:model', 'attributes:tags', 'attributes:description',
+      ]);
+      expect(issues[0].displayMessage).toBe('型号名称不能为空');
+    });
+
+    it('maps a required dynamic attribute by name to its attr id (TEST-04)', () => {
+      const attrs = [catAttr(123, '系列', 0, true)];
+      const result = validation({ attributes: ['系列'] });
+      const issues = buildEditorValidationIssues(result, { categoryAttributes: [], moreCategoryAttributes: attrs });
+      expect(issues[0].targetKey).toBe('attr:123');
+      expect(issues[0].expand).toBe('moreAttributes');
+      expect(issues[0].displayMessage).toBe('系列不能为空');
+    });
+
+    it('maps a Chinese-violating dynamic attribute to its attr id (TEST-05)', () => {
+      const attrs = [catAttr(456, '名称', 0)];
+      const result = validation({ attributes: ['名称不能包含中文'] });
+      const issues = buildEditorValidationIssues(result, { categoryAttributes: [], moreCategoryAttributes: attrs });
+      expect(issues[0].targetKey).toBe('attr:456');
+      expect(issues[0].displayMessage).toBe('名称不能包含中文');
+    });
+
+    it('falls back to the attributes section when two attrs share a name (TEST-06)', () => {
+      const attrs = [catAttr(100, '名称', 0), catAttr(200, '名称', 0)];
+      const result = validation({ attributes: ['名称不能包含中文'] });
+      const issues = buildEditorValidationIssues(result, { categoryAttributes: [], moreCategoryAttributes: attrs });
+      expect(issues[0].targetKey).toBe('section:attributes');
+      expect(issues[0].focus).toBe(false);
+    });
+
+    it('maps advanced, custom, variant, mapping and unknown messages (TEST-07)', () => {
+      const result = validation({
+        attributes: ['Rich Content JSON 格式无效', '属性 12345 不能包含中文', '未知未来错误'],
+        variants: ['SKU 2 主图', 'SKU 3 价格', '规格属性映射'],
+      });
+      const issues = buildEditorValidationIssues(result, { categoryAttributes: [], moreCategoryAttributes: [] });
+      expect(issues.map((issue) => issue.targetKey)).toEqual([
+        'advanced:rich-content', 'advanced:custom', 'section:attributes', 'variant:1:image', 'variant:2:price', 'variant:mapping',
+      ]);
+      expect(issues[0].expand).toBe('advanced');
+      expect(issues[1].expand).toBe('advanced');
+      expect(issues[3].displayMessage).toBe('SKU 2 主图不能为空');
+      expect(issues[4].displayMessage).toBe('SKU 3 价格必须大于 0');
+      expect(issues[5].displayMessage).toBe('规格属性映射未确认');
+    });
+
+    it('keeps payload-only entries locatable and ids unique, count matches validation.all', () => {
+      const result = validation({
+        main: ['俄语标题'],
+        payload: ['俄语标题', '主图', 'SKU 2 价格'],
+      });
+      const issues = buildEditorValidationIssues(result, { categoryAttributes: [], moreCategoryAttributes: [] });
+      expect(issues.map((issue) => issue.targetKey)).toEqual(['main:name', 'variant:0:image', 'variant:1:price']);
+      expect(issues.map((issue) => issue.id)).toEqual([...new Set(issues.map((issue) => issue.id))]);
+      expect(issues.length).toBe(result.all.length);
+      expect(result.payloadOnly).toEqual([]);
+    });
+
+    it('labels sections for the issue list header tags', () => {
+      expect(validationSectionLabel('main')).toBe('主要信息');
+      expect(validationSectionLabel('attributes')).toBe('产品属性');
+      expect(validationSectionLabel('variants')).toBe('变体设置');
     });
   });
 });

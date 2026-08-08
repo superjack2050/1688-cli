@@ -1,12 +1,17 @@
-import React from 'react';
-import { deriveEditorActions, type AttributeLoadState } from './ozonEditorUtils';
+import React, { useEffect, useRef, useState } from 'react';
+import {
+  deriveEditorActions,
+  validationSectionLabel,
+  type AttributeLoadState,
+  type EditorValidationIssue,
+} from './ozonEditorUtils';
 
 type ValidationState = 'idle' | 'validating' | 'valid' | 'invalid';
 
 interface Props {
   submitting: boolean;
   hasDraft: boolean;
-  missingCount: number;
+  issues: EditorValidationIssue[];
   validationState: ValidationState;
   lastSavedAt: string;
   aiFilling?: boolean;
@@ -15,6 +20,7 @@ interface Props {
   onValidate: () => void;
   onSubmit: () => void;
   onBack: () => void;
+  onLocateIssue: (issue: EditorValidationIssue) => void;
   onAiFillAttributes?: () => void;
   onRetryAttributes?: () => void;
 }
@@ -22,8 +28,8 @@ interface Props {
 export type { ValidationState };
 
 export default function OzonEditorBottomBar({
-  submitting, hasDraft, missingCount, validationState, lastSavedAt, aiFilling = false,
-  attributeLoadState = 'idle', onSave, onValidate, onSubmit, onBack, onAiFillAttributes, onRetryAttributes,
+  submitting, hasDraft, issues, validationState, lastSavedAt, aiFilling = false,
+  attributeLoadState = 'idle', onSave, onValidate, onSubmit, onBack, onLocateIssue, onAiFillAttributes, onRetryAttributes,
 }: Props) {
   // Single source of truth for all gating — the same rule the editor
   // handlers and tests use.
@@ -31,14 +37,43 @@ export default function OzonEditorBottomBar({
   const attributesError = attributeLoadState === 'error';
   const attributesLoading = attributeLoadState === 'loading';
   const attributesReady = attributeLoadState === 'ready';
+  const issueCount = issues.length;
+  const [popoverOpen, setPopoverOpen] = useState(false);
+  const statusWrapRef = useRef<HTMLDivElement>(null);
+
   const statusText =
     validationState === 'valid' ? '校验通过，可以提交 Ozon'
-    : validationState === 'invalid' ? `还有 ${missingCount} 个必填字段未完成`
+    : validationState === 'invalid' ? (issueCount > 0 ? `还有 ${issueCount} 项需要处理` : '校验未通过')
     : validationState === 'validating' ? '校验中...'
     : attributesError ? '类目属性加载失败，请重新加载后再保存或提交'
     : attributesLoading ? '正在加载类目属性...'
     : !attributesReady ? '类目属性尚未加载完成'
     : '';
+
+  useEffect(() => {
+    if (!popoverOpen) return undefined;
+    function onPointerDown(event: MouseEvent) {
+      if (statusWrapRef.current && !statusWrapRef.current.contains(event.target as Node)) {
+        setPopoverOpen(false);
+      }
+    }
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === 'Escape') setPopoverOpen(false);
+    }
+    document.addEventListener('pointerdown', onPointerDown);
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('pointerdown', onPointerDown);
+      document.removeEventListener('keydown', onKeyDown);
+    };
+  }, [popoverOpen]);
+
+  // a revalidate that fixed everything must not leave a stale list open
+  useEffect(() => {
+    if (issueCount === 0) setPopoverOpen(false);
+  }, [issueCount]);
+
+  const showIssueList = validationState === 'invalid' && issueCount > 0;
 
   return (
     <div className="ozon-ai-edit-bottom-bar">
@@ -60,11 +95,45 @@ export default function OzonEditorBottomBar({
       </div>
 
       <div className="ozon-ai-edit-bottom-right">
-        {statusText && (
-          <span className={`ozon-ai-edit-status ${validationState === 'valid' ? 'ready' : (validationState === 'invalid' || attributesError) ? 'warn' : ''}`}>
-            {statusText}
-          </span>
-        )}
+        <div className="ozon-status-popover-wrap" ref={statusWrapRef}>
+          {showIssueList ? (
+            <button
+              type="button"
+              className="ozon-ai-edit-status warn clickable"
+              aria-expanded={popoverOpen}
+              aria-haspopup="listbox"
+              onClick={() => setPopoverOpen((value) => !value)}
+            >
+              {statusText} ›
+            </button>
+          ) : statusText ? (
+            <span className={`ozon-ai-edit-status ${validationState === 'valid' ? 'ready' : (validationState === 'invalid' || attributesError) ? 'warn' : ''}`}>
+              {statusText}
+            </span>
+          ) : null}
+          {popoverOpen && showIssueList && (
+            <div className="ozon-issue-popover" role="dialog" aria-label="待处理问题">
+              <div className="ozon-issue-popover-header">还有 {issueCount} 项需要处理，点击直接定位</div>
+              <ul role="listbox" aria-label="待处理问题列表" className="ozon-issue-list">
+                {issues.map((issue) => (
+                  <li key={issue.id} role="option">
+                    <button
+                      type="button"
+                      className="ozon-issue-item"
+                      onClick={() => {
+                        setPopoverOpen(false);
+                        onLocateIssue(issue);
+                      }}
+                    >
+                      <span className="ozon-issue-section-tag">{validationSectionLabel(issue.section)}</span>
+                      <span className="ozon-issue-message">{issue.displayMessage || issue.message}</span>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </div>
         {lastSavedAt && <span className="ozon-ai-edit-saved-at">最近保存：{lastSavedAt}</span>}
         <button type="button" className="ozon-ai-edit-btn-plain" onClick={onBack}>取消并关闭</button>
         <button type="button" className="ozon-ai-edit-btn-secondary" onClick={onSave} disabled={!actions.canSave}>保存草稿</button>

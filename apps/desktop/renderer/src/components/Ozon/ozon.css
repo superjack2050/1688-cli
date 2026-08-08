@@ -2088,6 +2088,77 @@
 .ozon-ai-edit-status { font-size: 12px; color: #64748b; }
 .ozon-ai-edit-status.warn { color: #d97706; font-weight: 700; }
 .ozon-ai-edit-status.ready { color: #16a34a; font-weight: 700; }
+.ozon-ai-edit-status.clickable {
+  cursor: pointer;
+  border: none;
+  background: transparent;
+  padding: 4px 8px;
+  border-radius: 8px;
+  font: inherit;
+  transition: background 0.15s ease;
+}
+.ozon-ai-edit-status.clickable:hover { background: rgba(217, 119, 6, 0.12); }
+.ozon-ai-edit-status.clickable:focus-visible { outline: 2px solid rgba(239, 68, 68, 0.5); outline-offset: 1px; }
+.ozon-status-popover-wrap { position: relative; display: inline-flex; align-items: center; }
+.ozon-issue-popover {
+  position: absolute;
+  bottom: calc(100% + 10px);
+  right: 0;
+  z-index: 60;
+  width: 360px;
+  max-width: 90vw;
+  max-height: 320px;
+  overflow-y: auto;
+  background: #ffffff;
+  border: 1px solid #e5e7eb;
+  border-radius: 12px;
+  box-shadow: 0 12px 32px rgba(15, 23, 42, 0.16);
+  padding: 8px;
+}
+.ozon-issue-popover-header {
+  font-size: 13px;
+  font-weight: 700;
+  color: #0f172a;
+  padding: 6px 8px 8px;
+  border-bottom: 1px solid #f1f5f9;
+  margin-bottom: 4px;
+}
+.ozon-issue-list { list-style: none; margin: 0; padding: 0; }
+.ozon-issue-item {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: none;
+  border-radius: 8px;
+  padding: 8px;
+  cursor: pointer;
+  font: inherit;
+  color: #0f172a;
+}
+.ozon-issue-item:hover { background: #fff7ed; }
+.ozon-issue-item:focus-visible { outline: 2px solid rgba(239, 68, 68, 0.5); outline-offset: -1px; }
+.ozon-issue-section-tag {
+  flex: 0 0 auto;
+  font-size: 11px;
+  color: #64748b;
+  background: #f1f5f9;
+  border-radius: 4px;
+  padding: 1px 6px;
+}
+.ozon-issue-message { font-size: 13px; line-height: 1.45; }
+@keyframes ozon-validation-flash {
+  0% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0); }
+  20% { box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.28); }
+  55% { box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.18); }
+  100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0); }
+}
+.ozon-validation-flash {
+  border-color: #ef4444 !important;
+  animation: ozon-validation-flash 1.2s ease-out;
+}
 .ozon-ai-edit-saved-at { color: #94a3b8; font-size: 12px; }
 
 .ozon-ai-edit-btn-gradient,

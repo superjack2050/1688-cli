@@ -18,6 +18,7 @@ import {
   ATTR_WEIGHT,
   buildDraft,
   buildVariantTableView,
+  buildEditorValidationIssues,
   collectChineseTextViolations,
   collectDraftBlockers,
   collectHiddenRequiredAttributes,
@@ -36,11 +37,13 @@ import {
   parseCustomAttributesDetailed,
   pruneDynamicValuesForCategory,
   text,
+  validationSectionLabel,
   type AttributeLoadState,
   type CategoryTreeViewNode,
   type DictionaryValueIds,
   type DraftBuildResult,
   type DraftForm,
+  type EditorValidationIssue,
   type ImageManagerSession,
   type VariantRowView,
 } from './ozonEditorUtils';
@@ -55,6 +58,10 @@ function categoryDescriptionId(entry: OzonCategoryEntry): number {
 
 function categoryTypeId(entry: OzonCategoryEntry): number {
   return Number(entry.typeId || entry.type_id || 0);
+}
+
+function validationTargetClass(base: string, targetKey: string, flashingTargetKey: string | null): string {
+  return `${base}${flashingTargetKey === targetKey ? ' ozon-validation-flash' : ''}`;
 }
 
 function FieldError({ show, text: value }: { show: boolean; text: string }) {
@@ -563,6 +570,50 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onCl
   const [imageManager, setImageManager] = useState<ImageManagerSession | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const categoryKeyRef = useRef('');
+  const [pendingLocateIssue, setPendingLocateIssue] = useState<EditorValidationIssue | null>(null);
+  const [flashingTargetKey, setFlashingTargetKey] = useState<string | null>(null);
+  const flashTimerRef = useRef<number | null>(null);
+
+  function locateValidationIssue(issue: EditorValidationIssue): void {
+    if (issue.expand === 'moreAttributes') setShowMoreAttributes(true);
+    if (issue.expand === 'advanced') setShowAdvanced(true);
+    setPendingLocateIssue(issue);
+  }
+
+  // expand-then-locate: wait one frame after state render so hidden regions
+  // are mounted before the DOM lookup
+  useEffect(() => {
+    if (!pendingLocateIssue) return undefined;
+    const frame = window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => {
+        const root = scrollRef.current;
+        setPendingLocateIssue(null);
+        if (!root) return;
+        const target = root.querySelector<HTMLElement>(`[data-validation-target="${pendingLocateIssue.targetKey}"]`);
+        if (!target) return;
+        target.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'nearest' });
+        const focusable = target.querySelector<HTMLElement>(
+          'input:not([disabled]), textarea:not([disabled]), button:not([disabled]), [tabindex]:not([tabindex="-1"])',
+        );
+        if (pendingLocateIssue.focus !== false && focusable) {
+          window.setTimeout(() => {
+            focusable.focus({ preventScroll: true });
+          }, 400);
+        }
+        if (flashTimerRef.current !== null) window.clearTimeout(flashTimerRef.current);
+        setFlashingTargetKey(null);
+        window.requestAnimationFrame(() => {
+          setFlashingTargetKey(pendingLocateIssue.targetKey);
+          flashTimerRef.current = window.setTimeout(() => setFlashingTargetKey(null), 1200);
+        });
+      });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [pendingLocateIssue]);
+
+  useEffect(() => () => {
+    if (flashTimerRef.current !== null) window.clearTimeout(flashTimerRef.current);
+  }, []);
 
   const brandAttribute = useMemo(
     () => categoryAttributes.find((attr) => attr.id === ATTR_BRAND) || null,
@@ -1027,6 +1078,15 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onCl
     variants: validation?.variants.length || 0,
   };
 
+  const validationIssues = useMemo(
+    () => (validation ? buildEditorValidationIssues(validation, { categoryAttributes, moreCategoryAttributes }) : []),
+    [categoryAttributes, moreCategoryAttributes, validation],
+  );
+  // keep the stale issue popover from surviving a revalidate that fixed everything
+  useEffect(() => {
+    if (validationState === 'valid' && validationIssues.length === 0) setPendingLocateIssue(null);
+  }, [validationIssues.length, validationState]);
+
   const richContentInvalid = text(form.richContent).trim() !== '' && !normalizeRichContentJson(form.richContent).ok;
   // Realtime Chinese free-text violations, derived from the SAME collector
   // that feeds validateDraftForEditor — no second validation logic.
@@ -1332,8 +1392,8 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onCl
       <div className="ozon-ai-edit-scroll" ref={scrollRef}>
         <div className="ozon-ai-edit-layout">
           <main className="ozon-ai-edit-center">
-            <section id="ozon-section-main" className="ozon-form-card">
-              <div className="ozon-form-card-header">主要信息</div>
+            <section id="ozon-section-main" className="ozon-form-card" data-validation-target="section:main">
+              <div className={validationTargetClass('ozon-form-card-header', 'section:main', flashingTargetKey)}>主要信息</div>
               <div className="ozon-attr-grid">
                 <div className="ozon-attr-item">
                   <label className="ozon-attr-label">上架店铺</label>
@@ -1342,7 +1402,7 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onCl
                   </div>
                 </div>
 
-                <div className="ozon-attr-item">
+                <div className="ozon-attr-item" data-validation-target="main:category">
                   <label className="ozon-attr-label">Ozon 类目 <span className="req">*</span></label>
                   <div className="ozon-attr-control">
                     <div className="ozon-category-current">
@@ -1353,7 +1413,7 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onCl
                   <FieldError show={attemptedProduct && (validation?.main || []).includes('类目和类型')} text="请选择带 type_id 的 Ozon 末级类目" />
                 </div>
 
-                <div className="ozon-attr-item full">
+                <div className="ozon-attr-item full" data-validation-target="main:name">
                   <label className="ozon-attr-label">商品标题 <span className="req">*</span></label>
                   <div className="ozon-attr-control">
                     <input
@@ -1372,7 +1432,7 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onCl
                   />
                 </div>
 
-                <div className="ozon-attr-item">
+                <div className="ozon-attr-item" data-validation-target="main:brand">
                   <label className="ozon-attr-label">品牌 <span className="req">*</span>{brandIsDictionary ? <span className="unit-warning">（字典）</span> : null}</label>
                   <div className="ozon-attr-control">
                     {brandAttribute && brandIsDictionary ? (
@@ -1396,7 +1456,7 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onCl
                   )}
                 </div>
 
-                <div className="ozon-attr-item">
+                <div className="ozon-attr-item" data-validation-target="main:weight">
                   <label className="ozon-attr-label">含包装重量（g）<span className="unit-warning">注意单位是克(g)</span></label>
                   <div className="ozon-attr-control">
                     <input
@@ -1412,17 +1472,17 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onCl
                 <div className="ozon-attr-item full">
                   <label className="ozon-attr-label">包装尺寸（mm）<span className="unit-warning">注意单位是毫米(mm)</span></label>
                   <div className="ozon-dimension-row">
-                    <div className="ozon-dimension-field">
+                    <div className={validationTargetClass('ozon-dimension-field', 'main:depth', flashingTargetKey)}>
                       <input value={form.depth} onChange={(event) => updateField('depth', event.target.value)} inputMode="numeric" placeholder="长" />
                       <span className="dimension-hint">长</span>
                     </div>
                     <span className="dimension-sep">×</span>
-                    <div className="ozon-dimension-field">
+                    <div className={validationTargetClass('ozon-dimension-field', 'main:width', flashingTargetKey)}>
                       <input value={form.width} onChange={(event) => updateField('width', event.target.value)} inputMode="numeric" placeholder="宽" />
                       <span className="dimension-hint">宽</span>
                     </div>
                     <span className="dimension-sep">×</span>
-                    <div className="ozon-dimension-field">
+                    <div className={validationTargetClass('ozon-dimension-field', 'main:height', flashingTargetKey)}>
                       <input value={form.height} onChange={(event) => updateField('height', event.target.value)} inputMode="numeric" placeholder="高" />
                       <span className="dimension-hint">高</span>
                     </div>
@@ -1430,7 +1490,7 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onCl
                   <FieldError show={attemptedProduct && missingDims.length > 0} text={`包装尺寸必须大于 0（${missingDims.join('、')}）`} />
                 </div>
 
-                <div className="ozon-attr-item">
+                <div className="ozon-attr-item" data-validation-target="main:price">
                   <label className="ozon-attr-label">价格（¥）<span className="req">*</span></label>
                   <div className="ozon-attr-control">
                     <input
@@ -1455,7 +1515,7 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onCl
                   </div>
                 </div>
 
-                <div className="ozon-attr-item full">
+                <div className="ozon-attr-item full" data-validation-target="main:offerId">
                   <label className="ozon-attr-label">货号 <span className="req">*</span></label>
                   <div className="ozon-attr-control">
                     <input value={form.offerId} onChange={(event) => updateField('offerId', event.target.value)} placeholder="Ozon 商品货号" />
@@ -1465,8 +1525,8 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onCl
               </div>
             </section>
 
-            <section id="ozon-section-attributes" className="ozon-form-card">
-              <div className="ozon-form-card-header">
+            <section id="ozon-section-attributes" className="ozon-form-card" data-validation-target="section:attributes">
+              <div className={validationTargetClass('ozon-form-card-header', 'section:attributes', flashingTargetKey)}>
                 <span>产品属性</span>
                 <div className="ozon-attr-header-actions">
                   {hiddenRequiredAttributes.length > 0 && !showMoreAttributes && (
@@ -1496,7 +1556,7 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onCl
               )}
 
               <div className="ozon-attr-grid">
-                <div className="ozon-attr-item">
+                <div className="ozon-attr-item" data-validation-target="attributes:model">
                   <label className="ozon-attr-label">型号名称 <span className="req">*</span></label>
                   <div className="ozon-attr-control">
                     <input value={form.model} onChange={(event) => updateField('model', event.target.value)} placeholder="型号名称" />
@@ -1515,7 +1575,7 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onCl
                   </div>
                 </div>
 
-                <div className="ozon-attr-item full">
+                <div className="ozon-attr-item full" data-validation-target="attributes:tags">
                   <label className="ozon-attr-label">#主题标签</label>
                   <div className="ozon-attr-control">
                     <textarea
@@ -1531,7 +1591,7 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onCl
                   />
                 </div>
 
-                <div className="ozon-attr-item full">
+                <div className="ozon-attr-item full" data-validation-target="attributes:description">
                   <label className="ozon-attr-label">简介 / 描述</label>
                   <div className="ozon-attr-control">
                     <textarea
@@ -1549,14 +1609,14 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onCl
               </div>
 
               {showMoreAttributes && (
-                <div className="ozon-other-attrs-block">
+                <div className="ozon-other-attrs-block" data-validation-target="more-attrs">
                   <div className="ozon-other-attrs-divider">
                     <span>当前类目专有属性</span>
                     <small>{moreCategoryAttributes.length} 项</small>
                   </div>
                   <div className="ozon-other-attr-grid">
                     {moreCategoryAttributes.map((attr) => (
-                      <div key={attr.id} className="ozon-other-attr-item">
+                      <div key={attr.id} className="ozon-other-attr-item" data-validation-target={`attr:${attr.id}`}>
                         <label className="ozon-attr-label ozon-other-attr-label">
                           {attr.name}{attr.isRequired ? <span className="req">*</span> : null}
                         </label>
@@ -1644,7 +1704,7 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onCl
                 </button>
                 {showAdvanced && (
                   <div className="ozon-other-attr-grid">
-                    <div className="ozon-other-attr-item">
+                    <div className="ozon-other-attr-item" data-validation-target="advanced:rich-content">
                       <label className="ozon-attr-label ozon-other-attr-label">
                         Rich Content（JSON）
                         <span className="unit-warning">可选；草稿原有 Rich Content 会随保存保留</span>
@@ -1665,7 +1725,7 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onCl
                         <small className="ozon-attr-error-text ozon-other-attr-error">Rich Content 不能包含中文</small>
                       )}
                     </div>
-                    <div className="ozon-other-attr-item">
+                    <div className="ozon-other-attr-item" data-validation-target="advanced:custom">
                       <label className="ozon-attr-label ozon-other-attr-label">
                         自定义属性（属性ID=值）
                         <span className="unit-warning">高级模式；每行一个，例如 12345=示例值</span>
@@ -1693,8 +1753,8 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onCl
               </div>
             </section>
 
-            <section id="ozon-section-variants" className="ozon-form-card">
-              <div className="ozon-form-card-header">
+            <section id="ozon-section-variants" className="ozon-form-card" data-validation-target="section:variants">
+              <div className={validationTargetClass('ozon-form-card-header', 'section:variants', flashingTargetKey)}>
                 <span>变体设置</span>
                 <div className="ozon-variant-header-meta">
                   <span>{variantTable.rows.length} 个 SKU</span>
@@ -1721,9 +1781,9 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onCl
                     {variantTable.rows.map((row, index) => (
                       <tr key={row.key}>
                         <td className="col-idx">{index + 1}</td>
-                        <td className="col-sku-name">{row.skuName}</td>
+                        <td className="col-sku-name" data-validation-target={`variant:${index}:name`}>{row.skuName}</td>
                         <td className="col-images">
-                          <button type="button" className="variant-img-list clickable" title="点击管理图片" onClick={() => openImageManager(row)}>
+                          <button type="button" className={validationTargetClass('variant-img-list clickable', `variant:${index}:image`, flashingTargetKey)} title="点击管理图片" onClick={() => openImageManager(row)}>
                             {row.images.length ? (
                               row.images.slice(0, 3).map((img, ii) => (
                                 <span key={ii} className="variant-img-item">
@@ -1739,7 +1799,7 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onCl
                           </button>
                         </td>
                         <td className="col-offer-id">{row.offerId || '—'}</td>
-                        <td className="col-price">{row.price || '—'}</td>
+                        <td className={validationTargetClass('col-price', `variant:${index}:price`, flashingTargetKey)}>{row.price || '—'}</td>
                         <td className="col-stock">{row.stock || '0'}</td>
                         {visibleVariantDims.map((dim) => (
                           <td key={text(dim.source_name)} className="col-dim">{text(row.values[text(dim.source_name)]) || '—'}</td>
@@ -1751,7 +1811,7 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onCl
               </div>
 
               {visibleVariantDims.length > 0 && (
-                <div className="ozon-variant-dims-hint">
+                <div className={validationTargetClass('ozon-variant-dims-hint', 'variant:mapping', flashingTargetKey)} data-validation-target="variant:mapping">
                   变体维度：{visibleVariantDims.map((dim) => text(dim.source_name)).join(' / ')}
                 </div>
               )}
@@ -1771,7 +1831,7 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onCl
       <OzonEditorBottomBar
         submitting={submitting}
         hasDraft={Boolean(task.draft)}
-        missingCount={missing.length}
+        issues={validationIssues}
         validationState={validationState}
         lastSavedAt={lastSavedAt}
         aiFilling={attributeAiFilling}
@@ -1780,6 +1840,7 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onCl
         onValidate={handleValidate}
         onSubmit={submitDraft}
         onBack={onClose}
+        onLocateIssue={locateValidationIssue}
         onAiFillAttributes={() => fillCategoryAttributesByAi(false)}
         onRetryAttributes={reloadAttributes}
       />
