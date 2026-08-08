@@ -11,16 +11,20 @@ import {
   buildDraft,
   buildDynamicAttributes,
   buildVariantTableView,
+  collectChineseTextViolations,
   collectDraftBlockers,
   collectHiddenRequiredAttributes,
+  collectPayloadChineseViolations,
   collectProductPageMissing,
   collectRequiredExpandedIds,
   collectUnsupportedRequiredMediaAttributes,
   collectVariantViewMissing,
+  containsChineseText,
   createImageManagerSession,
   deriveEditorActions,
   filterCategoryAttributesForMoreAttrs,
   filterTreeNodes,
+  isChineseTextViolationMessage,
   isMediaAttributeName,
   isValidPositivePrice,
   lineList,
@@ -111,6 +115,14 @@ function baseItem(overrides: Record<string, unknown> = {}) {
 
 function attr(id: number, value: string, dictionaryValueId?: number) {
   return { id, complex_id: 0, values: dictionaryValueId ? [{ dictionary_value_id: dictionaryValueId, value }] : [{ value }] };
+}
+
+function catAttr(id: number, name: string, dictionaryId = 0, isRequired = false) {
+  return {
+    id, name, description: '', groupId: null, groupName: '',
+    dictionaryId, isRequired, isAspect: false, isCollection: false,
+    maxValueCount: 1, categoryDependent: false, attributeComplexId: 0, complexIsCollection: false,
+  };
 }
 
 describe('ozon editor utils', () => {
@@ -760,6 +772,207 @@ describe('ozon editor utils', () => {
       expect(actions.canAiFill).toBe(false);
       expect(actions.canSubmit).toBe(true);
       expect(actions.canSave).toBe(true);
+    });
+  });
+
+  describe('containsChineseText (TEST-01)', () => {
+    it('detects Han characters in mixed text', () => {
+      for (const chinese of ['纯棉', '男士T恤', 'Cotton纯棉', 'размер大', '中国']) {
+        expect(containsChineseText(chinese)).toBe(true);
+      }
+    });
+
+    it('ignores latin, cyrillic, digits and symbols', () => {
+      for (const clean of ['Cotton', 'NO NAME', 'Хлопок', '12345', 'XL', '90-60-90', '#футболка', '１２３']) {
+        expect(containsChineseText(clean)).toBe(false);
+      }
+    });
+
+    it('treats null/undefined as clean', () => {
+      expect(containsChineseText(null)).toBe(false);
+      expect(containsChineseText(undefined)).toBe(false);
+    });
+  });
+
+  describe('collectChineseTextViolations fixed fields (TEST-02)', () => {
+    it('flags 商品标题/型号/描述/主题标签', () => {
+      const violations = collectChineseTextViolations(
+        form({
+          name: '纯棉 футболка',
+          model: '男款XL',
+          description: 'Очень удобная纯棉',
+          tags: '#футболка\n#纯棉',
+        }),
+        {},
+        [],
+      );
+      expect(violations.main).toContain('商品标题不能包含中文');
+      expect(violations.attributes).toContain('型号名称不能包含中文');
+      expect(violations.attributes).toContain('商品描述不能包含中文');
+      expect(violations.attributes).toContain('主题标签不能包含中文');
+    });
+
+    it('never scans categoryPath', () => {
+      const violations = collectChineseTextViolations(
+        form({ categoryPath: '服装 / 服装 / T恤' }),
+        {},
+        [],
+      );
+      expect(violations.main).toEqual([]);
+      expect(violations.attributes).toEqual([]);
+    });
+  });
+
+  describe('dictionary exemption (TEST-03/TEST-04)', () => {
+    it('dictionary attributes skip the Chinese check', () => {
+      const violations = collectChineseTextViolations(form(), { '2001': '棉花' }, [catAttr(2001, '材质', 123)]);
+      expect(violations.attributes).not.toContain('材质不能包含中文');
+      expect(violations.attributes).toEqual([]);
+    });
+
+    it('free-text attributes with Chinese values are flagged', () => {
+      const violations = collectChineseTextViolations(form(), { '2002': '男士纯棉款' }, [catAttr(2002, '名称', 0)]);
+      expect(violations.attributes).toContain('名称不能包含中文');
+    });
+
+    it('controlled attribute ids never leak into dynamic checks', () => {
+      const violations = collectChineseTextViolations(form({ brand: '耐克' }), { '85': '耐克' }, [catAttr(85, '品牌', 0)]);
+      expect(violations.attributes).toContain('品牌不能包含中文');
+      expect(violations.attributes.filter((error) => error === '品牌不能包含中文')).toHaveLength(1);
+    });
+  });
+
+  describe('brand dual mode (TEST-05)', () => {
+    it('dictionary brand metadata exempts Chinese brand text', () => {
+      const violations = collectChineseTextViolations(form({ brand: '无品牌' }), {}, [catAttr(ATTR_BRAND, '品牌', 123)]);
+      expect(violations.attributes).not.toContain('品牌不能包含中文');
+    });
+
+    it('free-text brand with Chinese text is flagged', () => {
+      const violations = collectChineseTextViolations(form({ brand: '耐克' }), {}, [catAttr(ATTR_BRAND, '品牌', 0)]);
+      expect(violations.attributes).toContain('品牌不能包含中文');
+    });
+
+    it('NO NAME remains valid', () => {
+      const violations = collectChineseTextViolations(form(), {}, []);
+      expect(violations.attributes).not.toContain('品牌不能包含中文');
+    });
+  });
+
+  describe('custom attributes (TEST-06)', () => {
+    it('Chinese values are rejected as 不能包含中文', () => {
+      const parsed = parseCustomAttributesDetailed('12345=纯棉', []);
+      expect(parsed.errors).toContain('属性 12345 不能包含中文');
+      expect(parsed.attributes).toEqual([]);
+      const clean = parseCustomAttributesDetailed('12345=Cotton', []);
+      expect(clean.errors).toEqual([]);
+    });
+
+    it('Chinese custom errors surface in validation but NOT in save blockers', () => {
+      const formWithChinese = form({ customAttributes: '12345=纯棉' });
+      const violations = collectChineseTextViolations(formWithChinese, {}, []);
+      expect(violations.attributes).toContain('属性 12345 不能包含中文');
+      expect(collectDraftBlockers(formWithChinese, [])).not.toContain('属性 12345 不能包含中文');
+      expect(isChineseTextViolationMessage('属性 12345 不能包含中文')).toBe(true);
+      expect(isChineseTextViolationMessage('属性 12345 缺少值')).toBe(false);
+    });
+  });
+
+  describe('rich content (TEST-07)', () => {
+    it('valid Russian JSON passes', () => {
+      const violations = collectChineseTextViolations(
+        form({ richContent: '{"blocks":[{"text":"Хлопковая футболка"}]}' }),
+        {},
+        [],
+      );
+      expect(violations.attributes).not.toContain('Rich Content 不能包含中文');
+    });
+
+    it('valid JSON containing Chinese fails', () => {
+      const violations = collectChineseTextViolations(
+        form({ richContent: '{"blocks":[{"text":"纯棉 футболка"}]}' }),
+        {},
+        [],
+      );
+      expect(violations.attributes).toContain('Rich Content 不能包含中文');
+    });
+
+    it('invalid JSON keeps its own error and both rules coexist', () => {
+      const bad = form({ richContent: '{"blocks":' });
+      expect(normalizeRichContentJson(bad.richContent).ok).toBe(false);
+      expect(collectDraftBlockers(bad, [])).toContain('Rich Content JSON 格式无效');
+      expect(collectChineseTextViolations(bad, {}, []).attributes).toEqual([]);
+    });
+
+    it('empty rich content is clean', () => {
+      expect(collectChineseTextViolations(form({ richContent: '' }), {}, []).attributes).toEqual([]);
+    });
+  });
+
+  describe('payload defensive validator (TEST-08)', () => {
+    it('flags Chinese item names', () => {
+      expect(collectPayloadChineseViolations([{ name: '纯棉 футболка' }])).toContain('商品标题不能包含中文');
+    });
+
+    it('flags free-text attribute values without dictionary_value_id', () => {
+      const violations = collectPayloadChineseViolations([{
+        name: 'Ok',
+        attributes: [{ id: 2001, values: [{ value: '纯棉' }] }],
+      }]);
+      expect(violations).toContain('属性 2001 不能包含中文');
+    });
+
+    it('exempts values carrying a valid dictionary_value_id even with Chinese label', () => {
+      const violations = collectPayloadChineseViolations([{
+        name: 'Ok',
+        attributes: [{ id: 2001, values: [{ dictionary_value_id: 456, value: '棉花' }] }],
+      }]);
+      expect(violations).toEqual([]);
+    });
+
+    it('uses category metadata names for canonical labels', () => {
+      const violations = collectPayloadChineseViolations(
+        [{ name: 'Ok', attributes: [{ id: 2002, values: [{ value: '中国制造' }] }] }],
+        [{ id: 2002, name: '名称' }],
+      );
+      expect(violations).toContain('名称不能包含中文');
+    });
+
+    it('never scans sourceRows or metadata', () => {
+      expect(collectPayloadChineseViolations([{ name: 'Ok' }], [])).toEqual([]);
+    });
+  });
+
+  describe('validation integration (TEST-09)', () => {
+    it('routes Chinese errors to the right sections and dedupes with payload', () => {
+      const task = makeTask([baseItem()]);
+      const result = buildDraft(
+        task,
+        form({ name: '纯棉 футболка' }),
+        { '2001': '棉花', '2002': '中国制造' },
+        [catAttr(2001, '材质', 123), catAttr(2002, '名称', 0)],
+        { '2001': { '棉花': 456 } },
+        [],
+        {},
+        { attributeMetadataReady: true },
+      );
+      expect(result).not.toBeNull();
+      const validation = result!.validation;
+      expect(validation.main).toContain('商品标题不能包含中文');
+      expect(validation.attributes).toContain('名称不能包含中文');
+      expect(validation.all).toContain('商品标题不能包含中文');
+      expect(validation.all).toContain('名称不能包含中文');
+      expect(validation.all.some((error) => error.includes('棉花'))).toBe(false);
+      expect(validation.all.some((error) => error.includes('材质'))).toBe(false);
+      expect(result!.missing).toEqual(validation.all);
+      expect(validation.payloadOnly).toEqual([]);
+    });
+
+    it('save blockers ignore Chinese but keep JSON syntax errors', () => {
+      const withChinese = form({ name: '纯棉 футболка', customAttributes: '12345=纯棉' });
+      expect(collectDraftBlockers(withChinese, [])).toEqual([]);
+      const brokenJson = form({ name: '纯棉 футболка', richContent: '{oops' });
+      expect(collectDraftBlockers(brokenJson, [])).toContain('Rich Content JSON 格式无效');
     });
   });
 });

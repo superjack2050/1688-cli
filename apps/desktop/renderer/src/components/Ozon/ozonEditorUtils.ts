@@ -127,6 +127,23 @@ export function text(value: unknown): string {
   return String(value).trim();
 }
 
+/**
+ * Detects Han (Chinese) characters in a value. Only the actual characters are
+ * matched — full-width digits, CJK punctuation and UI labels are not Han.
+ */
+export function containsChineseText(value: unknown): boolean {
+  return /\p{Script=Han}/u.test(String(value ?? ''));
+}
+
+/**
+ * Every Chinese-violation message ends with this phrase. Used to separate
+ * "cannot save" blockers (syntax/conflicts) from validation-only violations
+ * (Chinese text must NOT block saving a draft).
+ */
+export function isChineseTextViolationMessage(message: string): boolean {
+  return message.endsWith('不能包含中文');
+}
+
 export function numberText(value: unknown): string {
   if (value === null || value === undefined || value === '') return '';
   const number = Number(String(value).replace(/[^\d.-]/g, ''));
@@ -385,6 +402,10 @@ export function parseCustomAttributesDetailed(
       errors.push(`属性 ${id} 缺少值`);
       continue;
     }
+    if (containsChineseText(attrValue)) {
+      errors.push(`属性 ${id} 不能包含中文`);
+      continue;
+    }
     if (seen.has(id)) {
       errors.push(`属性 ${id} 重复填写`);
       continue;
@@ -631,8 +652,10 @@ export function collectVariantViewMissing(
 
 /**
  * Errors that block even saving a draft: malformed Rich Content JSON and
- * custom attribute conflicts. Missing required fields do NOT block saving —
- * the user must be able to persist an incomplete draft.
+ * custom attribute syntax/conflict errors. Missing required fields do NOT
+ * block saving — the user must be able to persist an incomplete draft.
+ * Chinese-text violations are validation-only: a draft with Chinese free
+ * text must still be savable (validation and submit are the hard gates).
  */
 export function collectDraftBlockers(
   form: DraftForm,
@@ -642,19 +665,150 @@ export function collectDraftBlockers(
   const richContent = normalizeRichContentJson(form.richContent);
   if (!richContent.ok) errors.push(richContent.error);
   const custom = parseCustomAttributesDetailed(form.customAttributes, customCategoryAttributes);
-  errors.push(...custom.errors);
+  errors.push(...custom.errors.filter((error) => !isChineseTextViolationMessage(error)));
   return unique(errors);
+}
+
+/**
+ * Chinese-text violations grouped by the right-side section they belong to.
+ * `main` → 主要信息, `attributes` → 产品属性.
+ */
+export type ChineseTextViolations = {
+  main: string[];
+  attributes: string[];
+};
+
+/**
+ * Canonical error text shared by the UI section, the payload defensive
+ * validator and the tests — identical strings so `unique()` never counts
+ * one violation twice across buckets.
+ */
+export function chineseViolationLabelFor(attrId: number, attrName: string): string {
+  const label: Record<number, string> = {
+    [ATTR_PRODUCT_NAME]: '商品标题不能包含中文',
+    [ATTR_BRAND]: '品牌不能包含中文',
+    [ATTR_MODEL]: '型号名称不能包含中文',
+    [ATTR_DESCRIPTION]: '商品描述不能包含中文',
+    [ATTR_TAGS]: '主题标签不能包含中文',
+    [ATTR_RICH_CONTENT]: 'Rich Content 不能包含中文',
+  };
+  return label[attrId] || (attrName ? `${attrName}不能包含中文` : `属性 ${attrId} 不能包含中文`);
+}
+
+function categoryAttributeOf(
+  categoryAttributes: OzonCategoryAttribute[],
+  attrId: number,
+): OzonCategoryAttribute | undefined {
+  return categoryAttributes.find((attr) => attr.id === attrId);
+}
+
+/**
+ * UI-level collector. Scans ONLY free-text fields that will be submitted to
+ * Ozon as raw text:
+ *
+ * - main:   商品标题 (form.name)
+ * - attributes: 型号/描述/主题标签/自由文本品牌/Rich Content/
+ *               non-dictionary dynamic attributes/custom attribute values
+ *
+ * Dictionary attributes (dictionaryId > 0) are exempt: their Chinese text is
+ * only a UI display label — the real payload is `dictionary_value_id`.
+ * Brand follows the same rule via its category metadata. categoryPath and
+ * shopLabel are UI-only information and are never scanned.
+ */
+export function collectChineseTextViolations(
+  form: DraftForm,
+  dynamicValues: Record<string, string>,
+  categoryAttributes: OzonCategoryAttribute[],
+): ChineseTextViolations {
+  const main: string[] = [];
+  const attributes: string[] = [];
+
+  if (containsChineseText(form.name)) main.push(chineseViolationLabelFor(ATTR_PRODUCT_NAME, '商品标题'));
+  if (containsChineseText(form.model)) attributes.push(chineseViolationLabelFor(ATTR_MODEL, '型号名称'));
+  if (containsChineseText(form.description)) attributes.push(chineseViolationLabelFor(ATTR_DESCRIPTION, '商品描述'));
+  if (containsChineseText(form.tags)) attributes.push(chineseViolationLabelFor(ATTR_TAGS, '主题标签'));
+
+  const richContent = String(form.richContent || '').trim();
+  if (richContent && containsChineseText(richContent)) {
+    attributes.push(chineseViolationLabelFor(ATTR_RICH_CONTENT, 'Rich Content'));
+  }
+
+  const brandAttribute = categoryAttributeOf(categoryAttributes, ATTR_BRAND);
+  const brandIsDictionary = Number(brandAttribute?.dictionaryId || 0) > 0;
+  if (!brandIsDictionary && containsChineseText(form.brand)) {
+    attributes.push(chineseViolationLabelFor(ATTR_BRAND, '品牌'));
+  }
+
+  for (const attr of categoryAttributes) {
+    if (CONTROLLED_ATTR_IDS.has(attr.id)) continue;
+    if (Number(attr.dictionaryId || 0) > 0) continue;
+    if (containsChineseText(dynamicValues[String(attr.id)])) {
+      attributes.push(chineseViolationLabelFor(attr.id, attr.name));
+    }
+  }
+
+  const custom = parseCustomAttributesDetailed(form.customAttributes, categoryAttributes);
+  for (const error of custom.errors) {
+    if (isChineseTextViolationMessage(error)) attributes.push(error);
+  }
+
+  return { main: unique(main), attributes: unique(attributes) };
+}
+
+/**
+ * Defensive payload-level validator. Scans exactly the free text that will
+ * be submitted to Ozon:
+ *
+ * - item.name
+ * - item.attributes[].values[].value — unless the value carries a valid
+ *   dictionary_value_id (> 0), because then the Chinese text is only a UI
+ *   label and the real payload is the dictionary id.
+ *
+ * Never scans sourceRows, generated debug data, matched_category.path,
+ * messages or any internal metadata.
+ */
+export function collectPayloadChineseViolations(
+  items: Record<string, unknown>[],
+  categoryAttributes: Array<{ id: number; name: string }> = [],
+): string[] {
+  const violations: string[] = [];
+  const categoryNameById = new Map(categoryAttributes.map((attr) => [attr.id, attr.name]));
+
+  for (const item of items) {
+    if (containsChineseText(item.name)) {
+      violations.push(chineseViolationLabelFor(ATTR_PRODUCT_NAME, '商品标题'));
+    }
+    const attributes = Array.isArray(item.attributes) ? item.attributes : [];
+    for (const rawAttr of attributes) {
+      const attr = objectOf(rawAttr);
+      const attrId = Number(attr.id);
+      if (!attrId) continue;
+      const attrName = categoryNameById.get(attrId) || '';
+      const values = Array.isArray(attr.values) ? attr.values : [];
+      for (const rawValue of values) {
+        const value = objectOf(rawValue);
+        if (Number(value.dictionary_value_id || 0) > 0) continue;
+        if (containsChineseText(value.value)) {
+          violations.push(chineseViolationLabelFor(attrId, attrName));
+        }
+      }
+    }
+  }
+
+  return unique(violations);
 }
 
 /**
  * Single source of truth for the editor's final missing list.
  *
- * - main:      主要信息 (product page fields)
+ * - main:      主要信息 (product page fields + 商品标题中文)
  * - attributes:产品属性 (model, required category attrs, rich content,
- *              custom attribute conflicts, unsupported required media,
- *              category metadata blockers)
+ *              custom attribute syntax/conflicts, Chinese free-text
+ *              violations, unsupported required media, category metadata
+ *              blockers)
  * - variants:  变体设置 (per-SKU problems + unconfirmed mapping)
- * - payload:   payload-level invariants (title/image/category/price)
+ * - payload:   payload-level invariants (title/image/category/price +
+ *              defensive Chinese free-text scan)
  *
  * `all` is the union of every bucket and equals the missing list used for
  * badges, validate, save status and submit gating.
@@ -670,16 +824,24 @@ export function validateDraftForEditor(
 ): DraftValidationBreakdown {
   const unsupportedMedia = collectUnsupportedRequiredMediaAttributes(requiredAttrs);
   const unsupportedMediaIds = new Set(unsupportedMedia.map((attr) => attr.id));
+  const chinese = collectChineseTextViolations(form, dynamicValues, categoryAttributes);
 
-  const main = collectProductPageMissing(form);
+  const main = unique([
+    ...collectProductPageMissing(form),
+    ...chinese.main,
+  ]);
   const attributes = unique([
     ...collectAttributeMissing(form, dynamicValues, requiredAttrs.filter((attr) => !unsupportedMediaIds.has(attr.id))),
     ...collectDraftBlockers(form, categoryAttributes),
+    ...chinese.attributes,
     ...unsupportedMedia.map((attr) => `该 Ozon 类目要求媒体属性 ${attr.name}，当前编辑器暂不支持直接填写，请勿提交。`),
     ...(attributeMetadataMessage ? [attributeMetadataMessage] : []),
   ]);
   const variants = collectVariantViewMissing(items, draft);
-  const payload = collectPayloadMissing(draft, items, []);
+  const payload = unique([
+    ...collectPayloadMissing(draft, items, []),
+    ...collectPayloadChineseViolations(items, categoryAttributes),
+  ]);
   const sectionUnion = unique([...main, ...attributes, ...variants]);
   const payloadOnly = unique(payload.filter((item) => !sectionUnion.includes(item)));
   const all = unique([...main, ...attributes, ...variants, ...payload]);

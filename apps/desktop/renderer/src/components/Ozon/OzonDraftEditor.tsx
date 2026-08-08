@@ -18,9 +18,11 @@ import {
   ATTR_WEIGHT,
   buildDraft,
   buildVariantTableView,
+  collectChineseTextViolations,
   collectDraftBlockers,
   collectHiddenRequiredAttributes,
   collectUnsupportedRequiredMediaAttributes,
+  containsChineseText,
   CONTROLLED_ATTR_IDS,
   createDraftForm,
   createImageManagerSession,
@@ -1026,6 +1028,11 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onCl
   };
 
   const richContentInvalid = text(form.richContent).trim() !== '' && !normalizeRichContentJson(form.richContent).ok;
+  // Realtime Chinese free-text violations, derived from the SAME collector
+  // that feeds validateDraftForEditor — no second validation logic.
+  const chineseViolations = collectChineseTextViolations(form, dynamicValues, categoryAttributes);
+  const chineseMain = new Set(chineseViolations.main);
+  const chineseAttributes = new Set(chineseViolations.attributes);
   // Full category attribute set, not the filtered more-attrs list: a custom
   // line matching ANY current-category attribute id (variant-dimension,
   // optional-media included) must surface as a conflict.
@@ -1355,7 +1362,14 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onCl
                       placeholder="商品标题（俄语）"
                     />
                   </div>
-                  <FieldError show={attemptedProduct && missing.includes('俄语标题')} text="俄语标题不能为空" />
+                  <FieldError
+                    show={attemptedProduct && missing.includes('俄语标题')}
+                    text="俄语标题不能为空"
+                  />
+                  <FieldError
+                    show={chineseMain.has('商品标题不能包含中文')}
+                    text="商品标题不能包含中文，请使用俄语、英文、数字或符号。"
+                  />
                 </div>
 
                 <div className="ozon-attr-item">
@@ -1377,6 +1391,9 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onCl
                       <input value={form.brand} onChange={(event) => updateField('brand', event.target.value)} placeholder="如 NO NAME" />
                     )}
                   </div>
+                  {!brandIsDictionary && (
+                    <FieldError show={chineseAttributes.has('品牌不能包含中文')} text="品牌不能包含中文，请使用俄语、英文、数字或符号。" />
+                  )}
                 </div>
 
                 <div className="ozon-attr-item">
@@ -1485,6 +1502,10 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onCl
                     <input value={form.model} onChange={(event) => updateField('model', event.target.value)} placeholder="型号名称" />
                   </div>
                   <FieldError show={attemptedAttributes && (validation?.attributes || []).includes('型号名称')} text="型号名称不能为空" />
+                  <FieldError
+                    show={chineseAttributes.has('型号名称不能包含中文')}
+                    text="型号名称不能包含中文，请使用俄语、英文、数字或符号。"
+                  />
                 </div>
 
                 <div className="ozon-attr-item">
@@ -1504,6 +1525,10 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onCl
                       placeholder="#keyword 每行一个"
                     />
                   </div>
+                  <FieldError
+                    show={chineseAttributes.has('主题标签不能包含中文')}
+                    text="主题标签不能包含中文，请使用俄语、英文、数字或符号。"
+                  />
                 </div>
 
                 <div className="ozon-attr-item full">
@@ -1516,6 +1541,10 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onCl
                       placeholder="商品描述（俄语）"
                     />
                   </div>
+                  <FieldError
+                    show={chineseAttributes.has('商品描述不能包含中文')}
+                    text="商品描述不能包含中文，请使用俄语、英文、数字或符号。"
+                  />
                 </div>
               </div>
 
@@ -1588,6 +1617,9 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onCl
                             />
                           )}
                         </div>
+                        {!attr.dictionaryId && containsChineseText(dynamicValues[String(attr.id)]) && (
+                          <small className="ozon-attr-error-text ozon-other-attr-error">不能包含中文，请填写俄语/英文/数字。</small>
+                        )}
                         {attemptedAttributes && attr.isRequired && !text(dynamicValues[String(attr.id)]) && (
                           <small className="ozon-attr-error-text ozon-other-attr-error">该类目必填属性不能为空</small>
                         )}
@@ -1628,6 +1660,9 @@ export default function OzonDraftEditor({ task, onTaskUpdate, onBackTo1688, onCl
                       </div>
                       {richContentInvalid && (
                         <small className="ozon-attr-error-text ozon-other-attr-error">Rich Content 不是合法 JSON，保存和提交将被阻止</small>
+                      )}
+                      {text(form.richContent).trim() !== '' && containsChineseText(form.richContent) && (
+                        <small className="ozon-attr-error-text ozon-other-attr-error">Rich Content 不能包含中文</small>
                       )}
                     </div>
                     <div className="ozon-other-attr-item">
