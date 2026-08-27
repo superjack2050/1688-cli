@@ -5,6 +5,8 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.48] - 2026-08-28
+
 ### Fixed
 - `image-search` returned the same ~60 unrelated offers for every image. The
   command opened the legacy `s.1688.com/selloffer/offer_search.htm?imageId=…`

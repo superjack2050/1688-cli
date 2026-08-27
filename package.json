@@ -1,6 +1,6 @@
 {
   "name": "1688-cli",
-  "version": "0.1.47",
+  "version": "0.1.48",
   "description": "1688.com CLI for humans, Codex, and Claude Code. Product search, supplier scraper/research, inquiry, cart, orders, logistics, and seller chat.",
   "license": "MIT",
   "author": "nobodyjack",
