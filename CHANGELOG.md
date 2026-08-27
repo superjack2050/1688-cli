@@ -21,6 +21,11 @@ This project follows [Semantic Versioning](https://semver.org/).
   `BB1688_DEBUG=1` now prints the capture diagnostics for `image-search`
   (`src/commands/image-search.ts`, `src/session/search-capture.ts`,
   `tests/image-search.test.ts`).
+- Risk-control redirects that expose only a punish/x5secdata URL are now
+  classified as verification challenges before generic locator recovery, so
+  image upload failures point users to `--headed` manual verification instead
+  of reporting a missing upload button (`src/session/page-state.ts`,
+  `tests/page-state.test.ts`).
 
 ## [0.1.47] - 2026-06-27
 

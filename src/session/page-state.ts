@@ -22,6 +22,7 @@ export interface PageSnapshot {
 }
 
 const LOGIN_RE = /(?:login\.(?:1688|taobao)\.com|passport\.1688\.com)/i;
+const RISK_URL_RE = /(?:\/punish\b|x5secdata)/i;
 const RISK_TEXT_RE =
   /(滑块|拖动.*验证|安全验证|验证码|验证一下|检测到.*异常|环境异常|nc[_-]?captcha|请完成验证)/i;
 const RATE_LIMIT_TEXT_RE =
@@ -38,6 +39,11 @@ export function classifyPageState(snapshot: PageSnapshot): PageState {
   if (LOGIN_RE.test(url)) {
     indicators.push('login-url');
     return { kind: 'not_logged_in', url, title, indicators };
+  }
+
+  if (RISK_URL_RE.test(url)) {
+    indicators.push('risk-url');
+    return { kind: 'risk_challenge', url, title, indicators };
   }
 
   if (RATE_LIMIT_TEXT_RE.test(haystack)) {
