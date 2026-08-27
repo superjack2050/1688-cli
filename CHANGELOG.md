@@ -5,6 +5,18 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- `image-search` returned the same ~60 unrelated offers for every image. The
+  command opened the legacy `s.1688.com/selloffer/offer_search.htm?imageId=…`
+  results page, where 1688 now ignores `imageId` and renders the generic
+  keyword-search shell; its `getOfferList` call returns a personalised
+  "猜你喜欢" feed, which the capture then reported as image-search results.
+  Results are now read from the current pc-image-search app
+  (`air.1688.com/kapp/1688-search/pc-image-search/?tab=imageSearch&imageId=…`)
+  and the mtop capture is scoped to `method=getImageSearchPreResult`, so the
+  offers returned actually match the uploaded image
+  (`src/commands/image-search.ts`, `tests/image-search.test.ts`).
+
 ## [0.1.47] - 2026-06-27
 
 ### Fixed

@@ -32,9 +32,30 @@ export interface ImageSearchResult {
   offers: Offer[];
 }
 
-const UPLOAD_PAGE = 'https://s.1688.com/youyuan/index.htm';
-const RESULT_URL = (imageId: string) =>
-  `https://s.1688.com/selloffer/offer_search.htm?imageId=${imageId}`;
+// Upload entry point. 1688 currently redirects this to the pc-image-search app
+// on air.1688.com, and after "搜索图片" the page lands on a URL carrying
+// `imageId=<digits>` — that is where uploadAndGetImageId reads the id from.
+export const IMAGE_SEARCH_UPLOAD_URL = 'https://s.1688.com/youyuan/index.htm';
+
+// Results page for an already-uploaded imageId.
+//
+// Do NOT use the legacy `s.1688.com/selloffer/offer_search.htm?imageId=...`
+// URL here: 1688 now ignores `imageId` on that page and renders the ordinary
+// keyword-search shell with an empty query. Its getOfferList mtop call then
+// returns a personalised "猜你喜欢" feed, so every image produced the same 60
+// unrelated offers. The pc-image-search app instead fires an appId=32517
+// recommend call with `method: getImageSearchPreResult` and the imageId in
+// its params; the response has the same `data.data.OFFER.items` shape our
+// parser expects.
+export function imageSearchResultUrl(imageId: string): string {
+  const id = encodeURIComponent(imageId);
+  return `https://air.1688.com/kapp/1688-search/pc-image-search/?tab=imageSearch&imageId=${id}&imageIdList=${id}`;
+}
+
+// mtop `params.method` of the image-search offer list on the results page.
+// The page also fires other appId=32517 calls (behaviour reports, AI-assist
+// streams, empty getOfferList probes), so the capture must be scoped to this.
+export const IMAGE_SEARCH_RESULT_METHOD = 'getImageSearchPreResult';
 
 export async function execute(
   ctx: BrowserContext,
@@ -84,7 +105,7 @@ async function uploadAndGetImageId(
       }
     });
 
-    await page.goto(UPLOAD_PAGE, {
+    await page.goto(IMAGE_SEARCH_UPLOAD_URL, {
       waitUntil: 'domcontentloaded',
       timeout: 30000,
     });
@@ -127,9 +148,9 @@ async function searchByImageId(
 
   try {
     const captureResult = await captureSearchOffersForAction(
-      { page, keep: 'largest' },
+      { page, keep: 'largest', requireMethod: IMAGE_SEARCH_RESULT_METHOD },
       async () => {
-        await page.goto(RESULT_URL(imageId), {
+        await page.goto(imageSearchResultUrl(imageId), {
           waitUntil: 'domcontentloaded',
           timeout: 30000,
         });
