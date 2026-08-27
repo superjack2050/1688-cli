@@ -43,19 +43,29 @@ export const IMAGE_SEARCH_UPLOAD_URL = 'https://s.1688.com/youyuan/index.htm';
 // URL here: 1688 now ignores `imageId` on that page and renders the ordinary
 // keyword-search shell with an empty query. Its getOfferList mtop call then
 // returns a personalised "猜你喜欢" feed, so every image produced the same 60
-// unrelated offers. The pc-image-search app instead fires an appId=32517
-// recommend call with `method: getImageSearchPreResult` and the imageId in
-// its params; the response has the same `data.data.OFFER.items` shape our
-// parser expects.
+// unrelated offers. The pc-image-search app instead fires appId=32517
+// recommend calls with the imageId in their params (see
+// IMAGE_SEARCH_RESULT_METHODS); the response has the same
+// `data.data.OFFER.items` shape our parser expects.
 export function imageSearchResultUrl(imageId: string): string {
   const id = encodeURIComponent(imageId);
   return `https://air.1688.com/kapp/1688-search/pc-image-search/?tab=imageSearch&imageId=${id}&imageIdList=${id}`;
 }
 
-// mtop `params.method` of the image-search offer list on the results page.
+// mtop `params.method` values that carry the image-search offer list on the
+// results page. Observed sequence on a fresh imageId:
+//   1. getImageSearchPreResult  → placeholder (`"mock":["mock"]`, no items)
+//      while the server is still computing
+//   2. imageOfferSearchService  → the real 60-offer list ~0.5s later
+// On a later load of the same imageId the pre-result is cached server-side
+// and getImageSearchPreResult itself returns the 60 offers, with no second
+// call. Accept both; empty placeholder bodies are ignored by the capture.
 // The page also fires other appId=32517 calls (behaviour reports, AI-assist
-// streams, empty getOfferList probes), so the capture must be scoped to this.
-export const IMAGE_SEARCH_RESULT_METHOD = 'getImageSearchPreResult';
+// streams, empty getOfferList probes), so the capture must stay scoped.
+export const IMAGE_SEARCH_RESULT_METHODS = [
+  'getImageSearchPreResult',
+  'imageOfferSearchService',
+] as const;
 
 export async function execute(
   ctx: BrowserContext,
@@ -148,7 +158,7 @@ async function searchByImageId(
 
   try {
     const captureResult = await captureSearchOffersForAction(
-      { page, keep: 'largest', requireMethod: IMAGE_SEARCH_RESULT_METHOD },
+      { page, keep: 'largest', requireMethod: IMAGE_SEARCH_RESULT_METHODS },
       async () => {
         await page.goto(imageSearchResultUrl(imageId), {
           waitUntil: 'domcontentloaded',
@@ -161,6 +171,12 @@ async function searchByImageId(
         isBlocked: () => /\/punish|x5secdata=/.test(page.url()),
       },
     );
+    if (process.env.BB1688_DEBUG === '1') {
+      process.stderr.write(
+        `[image-search] capture status=${captureResult.status} url=${page.url()} ` +
+          `diagnostics=${JSON.stringify(captureResult.diagnostics)}\n`,
+      );
+    }
     if (captureResult.status === 'browser_closed') {
       throw new CliError(130, 'CANCELED', 'Browser closed.');
     }

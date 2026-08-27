@@ -2,7 +2,7 @@ import { EventEmitter } from 'node:events';
 import type { Page, Response as PWResponse } from 'playwright';
 import { describe, expect, it } from 'vitest';
 import {
-  IMAGE_SEARCH_RESULT_METHOD,
+  IMAGE_SEARCH_RESULT_METHODS,
   IMAGE_SEARCH_UPLOAD_URL,
   imageSearchResultUrl,
 } from '../src/commands/image-search.js';
@@ -48,7 +48,10 @@ function response(url: string, body: string): PWResponse {
   return { url: () => url, text: async () => body } as unknown as PWResponse;
 }
 
-function recommendUrl(params: Record<string, unknown>, appId: string | number = SEARCH_APP_ID): string {
+function recommendUrl(
+  params: Record<string, unknown>,
+  appId: string | number = SEARCH_APP_ID,
+): string {
   return `https://h5api.m.1688.com/h5/${SEARCH_MTOP_API}/2.0/?data=${encodeURIComponent(
     JSON.stringify({ appId, params: JSON.stringify(params) }),
   )}`;
@@ -66,17 +69,26 @@ function body(...offerIds: string[]): string {
   })})`;
 }
 
+// What getImageSearchPreResult returns while the server is still computing.
+const PLACEHOLDER_BODY =
+  'mtopjsonpreqTppId_32517_getOfferList1({"api":"mtop.relationrecommend.wirelessrecommend.recommend","data":{"result":[],"mock":["mock"],"version":1.0},"ret":["SUCCESS::调用成功"],"v":"2.0"})';
+
+const IMAGE_ID = '1022008822148672367';
+
 describe('image-search result capture', () => {
-  it('names the mtop method the pc-image-search results page uses', () => {
-    expect(IMAGE_SEARCH_RESULT_METHOD).toBe('getImageSearchPreResult');
+  it('names the mtop methods the pc-image-search results page uses', () => {
+    expect([...IMAGE_SEARCH_RESULT_METHODS]).toEqual([
+      'getImageSearchPreResult',
+      'imageOfferSearchService',
+    ]);
   });
 
-  it('keeps only the getImageSearchPreResult offer list, ignoring feed/probe calls', async () => {
+  it('fresh search: skips the pre-result placeholder and takes imageOfferSearchService', async () => {
     const mockPage = page();
     const capture = startSearchOfferCapture({
       page: mockPage,
       keep: 'largest',
-      requireMethod: IMAGE_SEARCH_RESULT_METHOD,
+      requireMethod: IMAGE_SEARCH_RESULT_METHODS,
     });
 
     const wait = capture.wait({ timeoutMs: 50, intervalMs: 1 });
@@ -88,14 +100,17 @@ describe('image-search result capture', () => {
     mockPage.emitResponse(
       response(recommendUrl({ modelName: 'imageSearchBehavior', action: 'REPORT' }, '53911'), body('report')),
     );
+    // Pre-result not ready yet.
+    mockPage.emitResponse(
+      response(
+        recommendUrl({ method: 'getImageSearchPreResult', beginPage: 1, imageId: IMAGE_ID }),
+        PLACEHOLDER_BODY,
+      ),
+    );
     // The real image-search result.
     mockPage.emitResponse(
       response(
-        recommendUrl({
-          method: IMAGE_SEARCH_RESULT_METHOD,
-          beginPage: 1,
-          imageId: '1022008822148672367',
-        }),
+        recommendUrl({ method: 'imageOfferSearchService', beginPage: 1, imageId: IMAGE_ID }),
         body('match-1', 'match-2'),
       ),
     );
@@ -103,7 +118,47 @@ describe('image-search result capture', () => {
     const result = await wait;
     expect(result.status).toBe('captured');
     expect(result.offers.map((o) => o.offerId)).toEqual(['match-1', 'match-2']);
-    expect(result.diagnostics.matchedCount).toBe(1);
+    expect(result.diagnostics.matchedCount).toBe(2);
+    expect(result.diagnostics.parsedCount).toBe(1);
+    capture.dispose();
+  });
+
+  it('cached search: takes the offers from getImageSearchPreResult directly', async () => {
+    const mockPage = page();
+    const capture = startSearchOfferCapture({
+      page: mockPage,
+      keep: 'largest',
+      requireMethod: IMAGE_SEARCH_RESULT_METHODS,
+    });
+
+    const wait = capture.wait({ timeoutMs: 50, intervalMs: 1 });
+    mockPage.emitResponse(
+      response(
+        recommendUrl({ method: 'getImageSearchPreResult', beginPage: 1, imageId: IMAGE_ID }),
+        body('cached-1', 'cached-2', 'cached-3'),
+      ),
+    );
+
+    const result = await wait;
+    expect(result.status).toBe('captured');
+    expect(result.offers.map((o) => o.offerId)).toEqual(['cached-1', 'cached-2', 'cached-3']);
+    capture.dispose();
+  });
+});
+
+describe('startSearchOfferCapture requireMethod', () => {
+  it('still accepts a single method string', async () => {
+    const mockPage = page();
+    const capture = startSearchOfferCapture({ page: mockPage, requireMethod: 'getOfferList' });
+
+    const wait = capture.wait({ timeoutMs: 50, intervalMs: 1 });
+    mockPage.emitResponse(
+      response(recommendUrl({ method: 'imageOfferSearchService', beginPage: 1 }), body('no')),
+    );
+    mockPage.emitResponse(response(recommendUrl({ method: 'getOfferList', beginPage: 1 }), body('yes')));
+
+    const result = await wait;
+    expect(result.offers.map((o) => o.offerId)).toEqual(['yes']);
     capture.dispose();
   });
 });

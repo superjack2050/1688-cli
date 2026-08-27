@@ -13,9 +13,14 @@ This project follows [Semantic Versioning](https://semver.org/).
   "猜你喜欢" feed, which the capture then reported as image-search results.
   Results are now read from the current pc-image-search app
   (`air.1688.com/kapp/1688-search/pc-image-search/?tab=imageSearch&imageId=…`)
-  and the mtop capture is scoped to `method=getImageSearchPreResult`, so the
-  offers returned actually match the uploaded image
-  (`src/commands/image-search.ts`, `tests/image-search.test.ts`).
+  and the mtop capture is scoped to the two methods that carry the offer
+  list there (`imageOfferSearchService` on a fresh search,
+  `getImageSearchPreResult` when the server already has the result cached),
+  so the offers returned actually match the uploaded image.
+  `startSearchOfferCapture`'s `requireMethod` accepts an array for this.
+  `BB1688_DEBUG=1` now prints the capture diagnostics for `image-search`
+  (`src/commands/image-search.ts`, `src/session/search-capture.ts`,
+  `tests/image-search.test.ts`).
 
 ## [0.1.47] - 2026-06-27
 
