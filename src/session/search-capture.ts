@@ -9,7 +9,8 @@ import {
 
 export interface SearchOfferCaptureOptions {
   page: Page;
-  requireMethod?: string;
+  /** Accept only responses whose mtop `params.method` is this value (or one of these values). */
+  requireMethod?: string | readonly string[];
   requireSortType?: string;
   allowUnscopedWirelessRecommend?: boolean;
   targetPage?: () => number;
@@ -153,7 +154,13 @@ export function startSearchOfferCapture(opts: SearchOfferCaptureOptions) {
       const meta = readSearchMtopRequestMeta(url);
       if (meta) {
         if (meta.appId !== SEARCH_APP_ID) return;
-        if (opts.requireMethod && meta.method !== opts.requireMethod) return;
+        if (opts.requireMethod !== undefined) {
+          const allowed =
+            typeof opts.requireMethod === 'string'
+              ? [opts.requireMethod]
+              : opts.requireMethod;
+          if (!allowed.includes(meta.method ?? '')) return;
+        }
         if (opts.requireSortType && meta.sortType !== opts.requireSortType) return;
         const targetPage = opts.targetPage?.();
         if (targetPage !== undefined && (meta.beginPage ?? 1) !== targetPage) return;

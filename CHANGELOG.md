@@ -5,6 +5,28 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- `image-search` returned the same ~60 unrelated offers for every image. The
+  command opened the legacy `s.1688.com/selloffer/offer_search.htm?imageId=…`
+  results page, where 1688 now ignores `imageId` and renders the generic
+  keyword-search shell; its `getOfferList` call returns a personalised
+  "猜你喜欢" feed, which the capture then reported as image-search results.
+  Results are now read from the current pc-image-search app
+  (`air.1688.com/kapp/1688-search/pc-image-search/?tab=imageSearch&imageId=…`)
+  and the mtop capture is scoped to the two methods that carry the offer
+  list there (`imageOfferSearchService` on a fresh search,
+  `getImageSearchPreResult` when the server already has the result cached),
+  so the offers returned actually match the uploaded image.
+  `startSearchOfferCapture`'s `requireMethod` accepts an array for this.
+  `BB1688_DEBUG=1` now prints the capture diagnostics for `image-search`
+  (`src/commands/image-search.ts`, `src/session/search-capture.ts`,
+  `tests/image-search.test.ts`).
+- Risk-control redirects that expose only a punish/x5secdata URL are now
+  classified as verification challenges before generic locator recovery, so
+  image upload failures point users to `--headed` manual verification instead
+  of reporting a missing upload button (`src/session/page-state.ts`,
+  `tests/page-state.test.ts`).
+
 ## [0.1.47] - 2026-06-27
 
 ### Fixed
